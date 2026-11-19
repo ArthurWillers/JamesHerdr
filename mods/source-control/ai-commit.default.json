@@ -1,0 +1,5 @@
+{
+  "provider": "",
+  "model": "",
+  "prompt": "Analyze the git diff below and write a git commit message following the Conventional Commits specification:\n1. First line: <type>(<optional scope>): <concise summary in imperative mood, max 72 chars>\n2. Second line: blank\n3. Body: concise bullet points (- ...) explaining the key changes and why they were made.\n\nRules:\n- Output ONLY the raw commit message text (no markdown code fences, no commentary, no intro/outro).\n- Do NOT run any commands or tools."
+}
