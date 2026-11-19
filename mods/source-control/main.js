@@ -23,6 +23,7 @@ import {
   setShared,
   openOverlay,
   checking,
+  notify,
 } from "herdr";
 
 const DEFAULT_PROMPT =
@@ -679,17 +680,50 @@ export default class JamesChanges extends View {
     if (!this.root || this.busy) return;
     const root = this.root;
     const on = this.on;
+    const isRemoteOp = label === "Pull" || label === "Push" || label === "Fetch";
+    const branchName = this.branch || "current branch";
     this.busy = true;
+    this.busyAction = label;
     this.note = null;
+    if (isRemoteOp) {
+      notify({
+        title: `${label} in progress`,
+        body:
+          label === "Push"
+            ? `Pushing commits from ${branchName} to remote…`
+            : label === "Pull"
+            ? `Pulling latest changes into ${branchName}…`
+            : "Fetching updates from remote…",
+      });
+    }
     cx.spawn(async (cx) => {
       try {
         const r = await exec("git", args, { cwd: root, on });
         if (r.code !== 0)
           throw new Error((r.stderr || r.stdout || `${label} failed`).trim());
+        if (isRemoteOp) {
+          notify({
+            title: `${label} completed`,
+            body:
+              label === "Push"
+                ? `Successfully pushed ${branchName} to remote.`
+                : label === "Pull"
+                ? `Successfully pulled latest changes into ${branchName}.`
+                : "Remote references are up to date.",
+          });
+        }
       } catch (e) {
         this.note = String(e);
+        if (isRemoteOp) {
+          notify({
+            title: `${label} failed`,
+            body: String(e),
+            level: "error",
+          });
+        }
       } finally {
         this.busy = false;
+        this.busyAction = null;
         this.refresh(cx);
         cx.notify();
       }
@@ -785,8 +819,15 @@ export default class JamesChanges extends View {
     ];
 
     this.busy = true;
+    this.busyAction = andPush ? "Push" : "Commit";
     this.note = null;
     this.showCommitMenu = false;
+    if (andPush) {
+      notify({
+        title: "Commit & Push in progress",
+        body: `Committing and pushing ${this.branch || "changes"} to remote…`,
+      });
+    }
     cx.spawn(async (cx) => {
       try {
         if (shouldStageAll) {
@@ -811,12 +852,24 @@ export default class JamesChanges extends View {
           const pushRes = await exec("git", pushArgs, { cwd: root, on });
           if (pushRes.code !== 0)
             throw new Error((pushRes.stderr || pushRes.stdout).trim());
+          notify({
+            title: "Commit & Push completed",
+            body: `Changes committed and pushed to remote.`,
+          });
         }
       } catch (e) {
         if (key() === context)
           this.note = `${andPush ? "Commit & Push" : "Commit"} failed: ${e}`;
+        if (andPush) {
+          notify({
+            title: "Commit & Push failed",
+            body: String(e),
+            level: "error",
+          });
+        }
       } finally {
         this.busy = false;
+        this.busyAction = null;
         this.refresh(cx);
         cx.notify();
       }
@@ -2196,9 +2249,11 @@ export default class JamesChanges extends View {
                       this.gitAction(["pull", "--ff-only"], cx, "Pull");
                     })
                     .child(
-                      svg(ICON.arrowDown)
-                        .size(11)
-                        .text_color(this.behind > 0 ? t.accent : t.muted)
+                      this.busy && this.busyAction === "Pull"
+                        ? svg(ICON.spinner).size(11).text_color(t.accent).spin(900)
+                        : svg(ICON.arrowDown)
+                            .size(11)
+                            .text_color(this.behind > 0 ? t.accent : t.muted)
                     )
                     .when(this.behind > 0, (e) =>
                       e.child(
@@ -2228,9 +2283,11 @@ export default class JamesChanges extends View {
                       );
                     })
                     .child(
-                      svg(ICON.arrowUp)
-                        .size(11)
-                        .text_color(this.ahead > 0 ? t.accent : t.muted)
+                      this.busy && this.busyAction === "Push"
+                        ? svg(ICON.spinner).size(11).text_color(t.accent).spin(900)
+                        : svg(ICON.arrowUp)
+                            .size(11)
+                            .text_color(this.ahead > 0 ? t.accent : t.muted)
                     )
                     .when(this.ahead > 0, (e) =>
                       e.child(
@@ -2253,7 +2310,11 @@ export default class JamesChanges extends View {
                       cx.stop_propagation();
                       this.gitAction(["fetch", "--prune"], cx, "Fetch");
                     })
-                    .child(svg(ICON.refresh).size(11).text_color(t.muted));
+                    .child(
+                      this.busy && this.busyAction === "Fetch"
+                        ? svg(ICON.spinner).size(11).text_color(t.accent).spin(900)
+                        : svg(ICON.refresh).size(11).text_color(t.muted)
+                    );
 
                   return h_flex()
                     .id("sc-graph-section-head")
