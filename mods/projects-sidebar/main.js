@@ -1,5 +1,5 @@
 import { View, div, image, svg } from "gpui-kit";
-import { v_flex, h_flex, ScrollHandle } from "gpui-base";
+import { v_flex, h_flex, ScrollHandle, HoverCard } from "gpui-base";
 import {
   spaces,
   machines,
@@ -98,6 +98,27 @@ function progIcon(p, size, color) {
     : image(p.icon).w(size).h(size).flex_none();
 }
 
+function tipAbove(id, label, triggerEl, t, anchor = "bottom_center") {
+  return HoverCard.new(`tip-${id}`)
+    .anchor(anchor)
+    .open_delay(300)
+    .close_delay(0)
+    .trigger(triggerEl)
+    .content(
+      div()
+        .px(8)
+        .py(4)
+        .mb(4)
+        .rounded(6)
+        .border_1()
+        .border_color(t.border)
+        .bg(t.popover ?? t.surface)
+        .text_size(11.5)
+        .text_color(t.foreground)
+        .child(label)
+    );
+}
+
 export default class ProjectsSidebar extends View {
   init() {
     this.scroll = ScrollHandle.new();
@@ -167,6 +188,18 @@ export default class ProjectsSidebar extends View {
         );
     }
 
+    const newSpaceBtn = h_flex()
+      .id("projects-new-space")
+      .w(22)
+      .h(22)
+      .rounded(5)
+      .items_center()
+      .justify_center()
+      .cursor_pointer()
+      .hover((e) => e.bg(t.hover))
+      .on_click(() => run("space.new"))
+      .child(svg(ICON.plus).size(14).text_color(t.muted));
+
     const header = h_flex()
       .id("projects-header")
       .h(28)
@@ -180,19 +213,7 @@ export default class ProjectsSidebar extends View {
           .text_color(t.muted)
           .child("Spaces")
       )
-      .child(
-        h_flex()
-          .id("projects-new-space")
-          .w(22)
-          .h(22)
-          .rounded(5)
-          .items_center()
-          .justify_center()
-          .cursor_pointer()
-          .hover((e) => e.bg(t.hover))
-          .on_click(() => run("space.new"))
-          .child(svg(ICON.plus).size(14).text_color(t.muted))
-      );
+      .child(tipAbove("new-space", "New Space", newSpaceBtn, t));
 
     const rows = [];
     const pushSpace = (s) => {
@@ -258,21 +279,31 @@ export default class ProjectsSidebar extends View {
             )
           )
           .child(
-            h_flex()
-              .id(`project-new-tab-${s.id}`)
-              .w(20)
-              .h(20)
-              .rounded(4)
-              .items_center()
-              .justify_center()
-              .opacity(0.45)
-              .hover((e) => e.opacity(1).bg(t.surface))
-              .on_mouse_down("left", (_ev, cx) => {
-                cx.stop_propagation();
-                if (!isCurrentSpace) run("space.select", { id: s.id });
-                openOverlay({ mod: "new-menu", kind: "popup", width: 250, height: 512 });
-              })
-              .child(svg(ICON.plus).size(12).text_color(t.muted))
+            tipAbove(
+              `new-tab-${s.id}`,
+              "New Tab or Agent",
+              h_flex()
+                .id(`project-new-tab-${s.id}`)
+                .w(20)
+                .h(20)
+                .rounded(4)
+                .items_center()
+                .justify_center()
+                .opacity(0.45)
+                .hover((e) => e.opacity(1).bg(t.surface))
+                .on_mouse_down("left", (_ev, cx) => {
+                  cx.stop_propagation();
+                  if (!isCurrentSpace) run("space.select", { id: s.id });
+                  openOverlay({
+                    mod: "james-new-menu",
+                    kind: "popup",
+                    width: 250,
+                    height: 512,
+                  });
+                })
+                .child(svg(ICON.plus).size(12).text_color(t.muted)),
+              t
+            )
           )
       );
 
@@ -358,21 +389,26 @@ export default class ProjectsSidebar extends View {
                     .child(label)
                 )
                 .child(
-                  h_flex()
-                    .id(`project-tab-close-${tab.id}`)
-                    .w(18)
-                    .h(18)
-                    .rounded(4)
-                    .items_center()
-                    .justify_center()
-                    .opacity(0.35)
-                    .hover((e) => e.opacity(1).bg(t.surface))
-                    .on_mouse_down("left", (_ev, e) => e.stop_propagation())
-                    .on_click((_ev, e) => {
-                      e.stop_propagation();
-                      run("tab.close", { id: tab.id });
-                    })
-                    .child(svg(ICON.close).size(11).text_color(t.muted))
+                  tipAbove(
+                    `close-tab-${tab.id}`,
+                    "Close Tab",
+                    h_flex()
+                      .id(`project-tab-close-${tab.id}`)
+                      .w(18)
+                      .h(18)
+                      .rounded(4)
+                      .items_center()
+                      .justify_center()
+                      .opacity(0.35)
+                      .hover((e) => e.opacity(1).bg(t.surface))
+                      .on_mouse_down("left", (_ev, e) => e.stop_propagation())
+                      .on_click((_ev, e) => {
+                        e.stop_propagation();
+                        run("tab.close", { id: tab.id });
+                      })
+                      .child(svg(ICON.close).size(11).text_color(t.muted)),
+                    t
+                  )
                 )
             );
           }
@@ -476,6 +512,35 @@ export default class ProjectsSidebar extends View {
           .overflow_y_scroll()
           .track_scroll(this.scroll)
           .children(rows)
+      )
+      .child(
+        h_flex()
+          .id("james-settings-open")
+          .h(30)
+          .px(10)
+          .gap(9)
+          .rounded(7)
+          .items_center()
+          .cursor_pointer()
+          .text_size(12.5)
+          .text_color(t.muted)
+          .hover((e) => e.bg(t.hover).text_color(t.foreground))
+          .on_mouse_down("left", (_ev, cx) => {
+            cx.stop_propagation();
+            openOverlay({
+              mod: "james-settings",
+              kind: "dialog",
+              width: 600,
+              height: 500,
+            });
+          })
+          .child(
+            svg("mods/source-control/icons/sliders.svg")
+              .size(14)
+              .flex_none()
+              .text_color(t.muted)
+          )
+          .child(div().truncate().child("JamesHerdr settings"))
       );
   }
 }

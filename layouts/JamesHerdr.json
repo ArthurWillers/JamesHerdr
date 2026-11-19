@@ -58,7 +58,7 @@
           "id": "tabs",
           "type": "block",
           "content": {
-            "mod": "tabs"
+            "mod": "james-tabs"
           },
           "size": {
             "px": 42
@@ -77,7 +77,7 @@
                 "pane": {
                   "header": {
                     "content": {
-                      "mod": "pane"
+                      "mod": "james-pane"
                     },
                     "reveal": "always",
                     "height": 30,
@@ -114,10 +114,10 @@
                       }
                     },
                     {
-                      "id": "changes",
+                      "id": "source-control",
                       "type": "block",
                       "content": {
-                        "mod": "changes"
+                        "mod": "source-control"
                       }
                     }
                   ],
