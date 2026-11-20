@@ -1,16 +1,17 @@
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, Popup } from "gpui-base";
 import { layout, run, theme } from "herdr";
+import { tr } from "./i18n.js";
 
 const ITEMS = [
   {
     id: "files",
-    label: "Files",
+    labelKey: "act.files",
     icon: "mods/activity-bar/icons/folder.svg",
   },
   {
     id: "source-control",
-    label: "Source Control",
+    labelKey: "act.source_control",
     icon: "mods/source-control/icons/source-control.svg",
   },
 ];
@@ -108,7 +109,7 @@ export default class ActivityBar extends View {
                   .bg(t.popover ?? t.surface)
                   .text_size(11.5)
                   .text_color(t.foreground)
-                  .child(item.label)
+                  .child(tr(item.labelKey))
               )
             );
         })

@@ -1,5 +1,6 @@
 import { View, div, image, svg } from "gpui-kit";
 import { v_flex, h_flex, ScrollHandle, Popup } from "gpui-base";
+import { tr } from "./i18n.js";
 import {
   spaces,
   machines,
@@ -219,9 +220,9 @@ export default class ProjectsSidebar extends View {
           .text_size(12)
           .font_weight(500)
           .text_color(t.muted)
-          .child("Spaces")
+          .child(tr("sb.spaces"))
       )
-      .child(tipAbove("new-space", "New Space", newSpaceBtn, t));
+      .child(tipAbove("new-space", tr("sb.new_space"), newSpaceBtn, t));
 
     const rows = [];
     const pushSpace = (s) => {
@@ -289,7 +290,7 @@ export default class ProjectsSidebar extends View {
           .child(
             tipAbove(
               `new-tab-${s.id}`,
-              "New Tab or Agent",
+              tr("sb.new_tab_or_agent"),
               h_flex()
                 .id(`project-new-tab-${s.id}`)
                 .w(20)
@@ -327,7 +328,7 @@ export default class ProjectsSidebar extends View {
               .items_center()
               .text_size(12)
               .text_color(t.muted)
-              .child("No chats")
+              .child(tr("sb.no_chats"))
           );
         } else {
           for (const tab of tabs) {
@@ -399,7 +400,7 @@ export default class ProjectsSidebar extends View {
                 .child(
                   tipAbove(
                     `close-tab-${tab.id}`,
-                    "Close Tab",
+                    tr("sb.close_tab"),
                     h_flex()
                       .id(`project-tab-close-${tab.id}`)
                       .w(18)
@@ -456,7 +457,7 @@ export default class ProjectsSidebar extends View {
               this.toggleMachine(m, cx);
             })
             .child(svg(m ? ICON.server : ICON.monitor).size(13).flex_none())
-            .child(div().flex_1().min_w(0).truncate().child(m ?? "This computer"))
+            .child(div().flex_1().min_w(0).truncate().child(m ?? tr("sb.this_computer")))
             .when(connected, (e) =>
               e.child(
                 h_flex()
@@ -494,7 +495,7 @@ export default class ProjectsSidebar extends View {
                   run("space.new", { machine: m ?? "" });
                 })
                 .child(svg(ICON.plus).size(12))
-                .child("New space there")
+                .child(tr("sb.new_space_there"))
             );
           } else {
             for (const s of mine) pushSpace(s);
@@ -548,7 +549,7 @@ export default class ProjectsSidebar extends View {
               .flex_none()
               .text_color(t.muted)
           )
-          .child(div().truncate().child("JamesHerdr settings"))
+          .child(div().truncate().child(tr("sb.settings")))
       );
   }
 }

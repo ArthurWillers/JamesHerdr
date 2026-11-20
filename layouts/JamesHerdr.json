@@ -14,7 +14,7 @@
           "id": "brand",
           "type": "block",
           "content": {
-            "mod": "workspace-chrome"
+            "mod": "james-chrome"
           },
           "size": {
             "px": 46
@@ -32,7 +32,7 @@
           "id": "sidebar-footer",
           "type": "block",
           "content": {
-            "mod": "workspace-chrome",
+            "mod": "james-chrome",
             "props": {
               "footer": true
             }
@@ -149,7 +149,7 @@
           "id": "status",
           "type": "block",
           "content": {
-            "mod": "workspace-status"
+            "mod": "james-status"
           },
           "size": {
             "px": 28

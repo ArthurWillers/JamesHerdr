@@ -1,6 +1,7 @@
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex, ScrollHandle } from "gpui-base";
-import { spaces, panes, run, openOverlay, theme, window, shared, setShared, layout, settings, nextCommand, knownAgents, exec, notify } from "herdr";
+import { spaces, panes, run, openOverlay, theme, window, shared, setShared, layout, settings, nextCommand, knownAgents, exec, notify, home, readTextFile, checking } from "herdr";
+import { tr } from "./i18n.js";
 
 function find(node, id) {
   if (node?.id === id) return node;
@@ -31,6 +32,53 @@ export default class Tabs extends View {
   init(_props, cx) {
     this.pressed = null;
     this.scroll = ScrollHandle.new();
+    const langPath = `${home()}/.config/omarchy/language`;
+    const syncSystemLang = async () => {
+      try {
+        const raw = await readTextFile(langPath);
+        const code = (raw ?? "").trim();
+        if (code) {
+          if (code !== shared("james.lang")) setShared("james.lang", code);
+          return true;
+        }
+      } catch {
+        // not on Omarchy or file absent
+      }
+      if (!shared("james.lang")) {
+        let sysLocale = "";
+        try {
+          const r = await exec("sh", [
+            "-c",
+            'printf "%s" "${LC_ALL:-${LC_MESSAGES:-${LANG:-}}}"',
+          ]);
+          sysLocale = (r.stdout ?? "").trim();
+        } catch {
+          // ignore on non-POSIX shells
+        }
+        if (!sysLocale) {
+          try {
+            sysLocale = Intl.DateTimeFormat().resolvedOptions().locale ?? "";
+          } catch {
+            sysLocale = "";
+          }
+        }
+        if (sysLocale) setShared("james.lang", sysLocale);
+      }
+      return false;
+    };
+    if (!checking()) {
+      cx.spawn(async () => {
+        const hasOmarchyLang = await syncSystemLang();
+        if (!hasOmarchyLang) return;
+        cx.timer.every(3000, () => {
+          if ((shared("james.langMode") ?? "auto") === "auto") {
+            cx.spawn(async () => {
+              await syncSystemLang();
+            });
+          }
+        });
+      });
+    }
     cx.spawn(async () => {
       try {
         const r = await exec("sh", [
@@ -111,8 +159,8 @@ export default class Tabs extends View {
             const oldModel = aiCfgCheck.model;
             setShared("james-changes.ai", { ...aiCfgCheck, model: "" });
             notify({
-              title: "AI Commit model unavailable",
-              body: `Model "${oldModel}" is no longer available. Switched to Auto.`,
+              title: tr("tabs.model_unavailable_title"),
+              body: tr("tabs.model_unavailable_body", { model: oldModel }),
               level: "warning",
             });
           }

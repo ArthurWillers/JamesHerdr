@@ -1,6 +1,7 @@
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
 import { theme, spaces, panes, knownAgents, exec, run, openOverlay, closeOverlay, props, window, keys, shared, setShared } from "herdr";
+import { tr } from "./i18n.js";
 
 // The last agents each machine reported, shown at once while knownAgents() checks again.
 const KNOWN = "new-menu.agents";
@@ -99,25 +100,25 @@ export default class NewMenu extends View {
         .child(this.row(
           `default-${defaultAgent.key}`,
           defaultAgent.tint ? svg(defaultAgent.icon).size(14).flex_none().text_color(t.accent) : image(defaultAgent.icon).w(14).h(14).flex_none(),
-          `${defaultAgent.name} (Default)`,
+          tr("menu.default_suffix", { name: defaultAgent.name }),
           () => run("tab.new", { name: defaultAgent.name, space: space?.id, argv: defaultAgent.run }),
           shortcut("james-tabs.default_agent") || "1"
         ))
         .child(div().h(1).mx(4).my(4).bg(t.border))
       )
-      .child(this.row("terminal", svg("icons/shell.svg").size(14), "Terminal", () => run("tab.new", { space: space?.id }), shortcut("tab.new")))
+      .child(this.row("terminal", svg("icons/shell.svg").size(14), tr("menu.terminal"), () => run("tab.new", { space: space?.id }), shortcut("tab.new")))
       .when(choices.length > 0 || this.failed || this.agents.length === 0, el => el
-        .child(div().px(9).pt(8).pb(4).text_size(11).text_color(t.dim).child("Start an agent"))
+        .child(div().px(9).pt(8).pb(4).text_size(11).text_color(t.dim).child(tr("menu.start_agent")))
         .child(v_flex().flex_1().min_h(0).overflow_y_scrollbar()
           .children(choices.map((a, i) => {
             const num = defaultAgent ? i + 2 : i + 1;
             return this.row(a.key, a.tint ? svg(a.icon).size(14).flex_none().text_color(t.foreground) : image(a.icon).w(14).h(14).flex_none(), a.name,
-              () => run("tab.new", { name: a.name, space: space?.id, argv: a.run }), a.installed ? (num <= 9 ? String(num) : "") : "not installed", a.installed);
+              () => run("tab.new", { name: a.name, space: space?.id, argv: a.run }), a.installed ? (num <= 9 ? String(num) : "") : tr("menu.not_installed"), a.installed);
           }))
-          .when(this.failed || this.agents.length === 0, el => el.child(div().px(9).py(6).text_color(t.dim).child(this.failed ? "Could not check installed agents" : "Checking installed agents…")))))
+          .when(this.failed || this.agents.length === 0, el => el.child(div().px(9).py(6).text_color(t.dim).child(this.failed ? tr("menu.check_failed") : tr("menu.checking_agents"))))))
       .child(div().h(1).mx(4).my(5).bg(t.border))
-      .child(this.row("space", div().w(14).child("+"), "New space", () => run("space.new"), shortcut("space.new")))
-      .child(this.row("worktree", svg("mods/workspace-chrome/branch.svg").size(14), "New worktree…", () => openOverlay({ mod: "worktree", kind: "dialog", width: 460, height: 280, props: { space: space?.id, folder: panes().find(p => p.focused)?.cwd, action: "new" } }), "", Boolean(space)))
-      .child(this.row("worktree-open", svg("mods/workspace-chrome/branch.svg").size(14), "Open worktree\u2026", () => openOverlay({ mod: "worktree", kind: "dialog", width: 560, height: 480, props: { space: space?.id, folder: panes().find(p => p.focused)?.cwd, action: "open" } }), "", Boolean(space)));
+      .child(this.row("space", div().w(14).child("+"), tr("menu.new_space"), () => run("space.new"), shortcut("space.new")))
+      .child(this.row("worktree", svg("mods/workspace-chrome/branch.svg").size(14), tr("menu.new_worktree"), () => openOverlay({ mod: "worktree", kind: "dialog", width: 460, height: 280, props: { space: space?.id, folder: panes().find(p => p.focused)?.cwd, action: "new" } }), "", Boolean(space)))
+      .child(this.row("worktree-open", svg("mods/workspace-chrome/branch.svg").size(14), tr("menu.open_worktree"), () => openOverlay({ mod: "worktree", kind: "dialog", width: 560, height: 480, props: { space: space?.id, folder: panes().find(p => p.focused)?.cwd, action: "open" } }), "", Boolean(space)));
   }
 }

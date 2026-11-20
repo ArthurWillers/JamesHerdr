@@ -1,4 +1,5 @@
 import { View, div, svg } from "gpui-kit";
+import { tr } from "./i18n.js";
 import {
   v_flex,
   h_flex,
@@ -53,22 +54,22 @@ const ICON = {
   cloud: "mods/source-control/icons/cloud.svg",
 };
 
-const GIT_STATUS_LABELS = {
-  M: "Modified",
-  A: "Added",
-  D: "Deleted",
-  U: "Untracked",
-  R: "Renamed",
-  C: "Copied",
-  T: "Type Changed",
+const GIT_STATUS_KEYS = {
+  M: "sc.status_M",
+  A: "sc.status_A",
+  D: "sc.status_D",
+  U: "sc.status_U",
+  R: "sc.status_R",
+  C: "sc.status_C",
+  T: "sc.status_T",
 };
 
-const gitStatusLabel = (code) => GIT_STATUS_LABELS[code] ?? code;
+const gitStatusLabel = (code) => (GIT_STATUS_KEYS[code] ? tr(GIT_STATUS_KEYS[code]) : code);
 
 const COMMIT_MODES = [
-  { id: "commit", label: "Commit" },
-  { id: "push", label: "Commit & Push" },
-  { id: "amend", label: "Commit (Amend)" },
+  { id: "commit", labelKey: "sc.commit" },
+  { id: "push", labelKey: "sc.commit_push" },
+  { id: "amend", labelKey: "sc.commit_amend" },
 ];
 
 const tipState = { id: null };
@@ -246,7 +247,7 @@ export default class JamesChanges extends View {
     this.graphScroll = ScrollHandle.new();
 
     this.input = TextareaState.new({
-      placeholder: "Message (first line summary, body below)",
+      placeholder: tr("sc.composer_placeholder"),
       rows: 3,
     });
     this.input.on("change", (_e, cx) => {
@@ -319,7 +320,7 @@ export default class JamesChanges extends View {
           this.commits = [];
           this.setLines([]);
           this.open = null;
-          this.error = "Not a git repository";
+          this.error = tr("sc.not_git");
           return;
         }
         const root = top.stdout.trim();
@@ -696,13 +697,13 @@ export default class JamesChanges extends View {
     this.note = null;
     if (isRemoteOp) {
       notify({
-        title: `${label} in progress`,
+        title: tr("sc.in_progress", { action: label }),
         body:
           label === "Push"
-            ? `Pushing commits from ${branchName} to remote…`
+            ? tr("sc.pushing_msg", { branch: branchName })
             : label === "Pull"
-            ? `Pulling latest changes into ${branchName}…`
-            : "Fetching updates from remote…",
+            ? tr("sc.pulling_msg", { branch: branchName })
+            : tr("sc.fetching_msg"),
       });
     }
     cx.spawn(async (cx) => {
@@ -712,20 +713,20 @@ export default class JamesChanges extends View {
           throw new Error((r.stderr || r.stdout || `${label} failed`).trim());
         if (isRemoteOp) {
           notify({
-            title: `${label} completed`,
+            title: tr("sc.completed", { action: label }),
             body:
               label === "Push"
-                ? `Successfully pushed ${branchName} to remote.`
+                ? tr("sc.pushed_ok")
                 : label === "Pull"
-                ? `Successfully pulled latest changes into ${branchName}.`
-                : "Remote references are up to date.",
+                ? tr("sc.pulled_ok")
+                : tr("sc.fetched_ok"),
           });
         }
       } catch (e) {
         this.note = String(e);
         if (isRemoteOp) {
           notify({
-            title: `${label} failed`,
+            title: tr("sc.failed", { action: label }),
             body: String(e),
             level: "error",
           });
@@ -833,8 +834,8 @@ export default class JamesChanges extends View {
     this.showCommitMenu = false;
     if (andPush) {
       notify({
-        title: "Commit & Push in progress",
-        body: `Committing and pushing ${this.branch || "changes"} to remote…`,
+        title: tr("sc.commit_push_progress"),
+        body: tr("sc.commit_push_progress_body", { branch: this.branch || "changes" }),
       });
     }
     cx.spawn(async (cx) => {
@@ -862,16 +863,16 @@ export default class JamesChanges extends View {
           if (pushRes.code !== 0)
             throw new Error((pushRes.stderr || pushRes.stdout).trim());
           notify({
-            title: "Commit & Push completed",
-            body: `Changes committed and pushed to remote.`,
+            title: tr("sc.commit_push_done"),
+            body: tr("sc.commit_push_done_body"),
           });
         }
       } catch (e) {
         if (key() === context)
-          this.note = `${andPush ? "Commit & Push" : "Commit"} failed: ${e}`;
+          this.note = `${andPush ? tr("sc.commit_push") : tr("sc.commit")}: ${e}`;
         if (andPush) {
           notify({
-            title: "Commit & Push failed",
+            title: tr("sc.commit_push_fail"),
             body: String(e),
             level: "error",
           });
@@ -1157,13 +1158,13 @@ export default class JamesChanges extends View {
           })
           .child(svg(ICON.undo).size(11).text_color(t.muted));
         return e.child(
-          tipAbove(`discard-${f.path}`, "Discard Changes", discardBtn, t)
+          tipAbove(`discard-${f.path}`, tr("sc.discard"), discardBtn, t)
         );
       })
       .child(
         tipAbove(
           `stage-${f.staged ? "s" : "u"}-${f.path}`,
-          f.staged ? "Unstage Changes" : "Stage Changes",
+          f.staged ? tr("sc.unstage") : tr("sc.stage"),
           stageToggleBtn,
           t
         )
@@ -1404,7 +1405,7 @@ export default class JamesChanges extends View {
                                 }
                                 cx.notify();
                               })
-                              .child(showBody ? "Hide details" : "Show full message")
+                              .child(showBody ? tr("sc.hide_details") : "...")
                           )
                         )
                     )
@@ -1434,7 +1435,7 @@ export default class JamesChanges extends View {
                   div()
                     .text_size(11)
                     .text_color(t.dim)
-                    .child("Loading commit files…")
+                    .child(tr("sc.loading_commit_files"))
                 )
             )
           )
@@ -1464,7 +1465,7 @@ export default class JamesChanges extends View {
                       .pl(6)
                       .text_size(10.5)
                       .text_color(t.dim)
-                      .child(`${files.length} files changed`)
+                      .child(tr("sc.files_changed", { count: files.length }))
                   )
                   .when(commitAdd > 0, (e) =>
                     e.child(
@@ -1728,7 +1729,7 @@ export default class JamesChanges extends View {
               .size(13)
               .text_color(canCommit ? t.solid_foreground : t.dim)
           )
-          .child(div().child(this.busy ? "Working…" : activeModeObj.label))
+          .child(div().child(this.busy ? tr("sc.working") : tr(activeModeObj.labelKey)))
       )
       .child(
         div()
@@ -1739,7 +1740,7 @@ export default class JamesChanges extends View {
       .child(
         tipAbove(
           "more-commit-actions",
-          "More Commit Actions",
+          tr("sc.more_commit_actions"),
           dropdownArrowBtn,
           t
         )
@@ -1844,10 +1845,10 @@ export default class JamesChanges extends View {
               .font_semibold()
               .text_size(13)
               .text_color(t.foreground)
-              .child("Source Control")
+              .child(tr("sc.title"))
           )
           .child(div().flex_1())
-          .child(tipAbove("sc-branch", "Switch Branch or Worktree", branchBtn, t))
+          .child(tipAbove("sc-branch", tr("sc.switch_branch"), branchBtn, t))
       )
       .child(
         // Always-visible Commit Composer
@@ -1907,7 +1908,7 @@ export default class JamesChanges extends View {
                       : svg(ICON.sparkles).size(11).text_color(t.accent)
                   )
                   .child(
-                    div().child(this.generating ? "Generating…" : "Generate")
+                    div().child(this.generating ? tr("sc.generating") : tr("sc.generate"))
                   )
               )
               .child(
@@ -1977,7 +1978,7 @@ export default class JamesChanges extends View {
                                   .text_color(t.accent)
                               : div().w(11).flex_none()
                           )
-                          .child(div().text_size(11.5).child(m.label));
+                          .child(div().text_size(11.5).child(tr(m.labelKey)));
                       })
                     )
                 )
@@ -2073,7 +2074,7 @@ export default class JamesChanges extends View {
                           .text_size(11.5)
                           .font_weight(600)
                           .text_color(t.muted)
-                          .child("Staged Changes")
+                          .child(tr("sc.staged_changes"))
                       )
                       .when(stagedAdd > 0, (e) =>
                         e.child(
@@ -2094,7 +2095,7 @@ export default class JamesChanges extends View {
                       .child(
                         tipAbove(
                           "unstage-all",
-                          "Unstage All Changes",
+                          tr("sc.unstage_all"),
                           unstageAllBtn,
                           t
                         )
@@ -2179,7 +2180,7 @@ export default class JamesChanges extends View {
                         .text_size(11.5)
                         .font_weight(600)
                         .text_color(t.muted)
-                        .child("Changes")
+                        .child(tr("sc.changes"))
                     )
                     .when(unstagedAdd > 0, (e) =>
                       e.child(
@@ -2201,7 +2202,7 @@ export default class JamesChanges extends View {
                       e.child(
                         tipAbove(
                           "stage-all",
-                          "Stage All Changes",
+                          tr("sc.stage_all"),
                           stageAllBtn,
                           t
                         )
@@ -2393,14 +2394,14 @@ export default class JamesChanges extends View {
                         .text_size(11.5)
                         .font_weight(600)
                         .text_color(t.muted)
-                        .child("Graph")
+                        .child(tr("sc.graph"))
                     )
-                    .child(tipAbove("graph-pull", "Pull", pullBtn, t))
-                    .child(tipAbove("graph-push", "Push", pushBtn, t))
+                    .child(tipAbove("graph-pull", tr("sc.pull"), pullBtn, t))
+                    .child(tipAbove("graph-push", tr("sc.push"), pushBtn, t))
                     .child(
                       tipAbove(
                         "graph-refresh",
-                        "Fetch & Refresh",
+                        tr("sc.fetch_refresh"),
                         refreshBtn,
                         t
                       )
@@ -2502,11 +2503,11 @@ export default class JamesChanges extends View {
                         this.open.commit
                           ? `${this.open.path} (${this.open.commit})`
                           : `${this.open.path} (${
-                              this.open.staged ? "Staged" : "Working Tree"
+                              this.open.staged ? tr("sc.staged_badge") : tr("sc.working_tree_badge")
                             })`
                       )
                   )
-                  .child(tipAbove("close-diff", "Close Diff", closeDiffBtn, t))
+                  .child(tipAbove("close-diff", tr("sc.close_diff"), closeDiffBtn, t))
               )
               .child(
                 div()
