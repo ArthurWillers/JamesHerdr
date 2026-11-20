@@ -130,6 +130,16 @@
               "min": 280,
               "max": 900,
               "hidden": true
+            },
+            {
+              "id": "activity",
+              "type": "block",
+              "content": {
+                "mod": "activity-bar"
+              },
+              "size": {
+                "px": 40
+              }
             }
           ],
           "padding": 8,

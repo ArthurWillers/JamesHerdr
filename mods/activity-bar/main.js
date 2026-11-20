@@ -1,0 +1,117 @@
+import { View, div, svg } from "gpui-kit";
+import { v_flex, h_flex, Popup } from "gpui-base";
+import { layout, run, theme } from "herdr";
+
+const ITEMS = [
+  {
+    id: "files",
+    label: "Files",
+    icon: "mods/activity-bar/icons/folder.svg",
+  },
+  {
+    id: "source-control",
+    label: "Source Control",
+    icon: "mods/source-control/icons/source-control.svg",
+  },
+];
+
+function find(node, id) {
+  if (node?.id === id) return node;
+  for (const child of node?.children ?? []) {
+    const found = find(child, id);
+    if (found) return found;
+  }
+  return null;
+}
+
+export default class ActivityBar extends View {
+  init() {
+    this.hoveredTip = null;
+  }
+
+  render() {
+    const t = theme();
+    const root = layout();
+    const panel = find(root, "panel");
+    const body = find(root, "panel-body");
+    const activeId = panel && !panel.hidden ? body?.active : null;
+
+    return v_flex()
+      .id("activity-bar")
+      .size_full()
+      .py(6)
+      .gap(6)
+      .items_center()
+      .rounded(10)
+      .bg(t.chrome ?? t.background)
+      .border_1()
+      .border_color(t.border)
+      .children(
+        ITEMS.map((item) => {
+          const on = activeId === item.id;
+          const btn = h_flex()
+            .id(`activity-${item.id}`)
+            .w(30)
+            .h(30)
+            .rounded(7)
+            .relative()
+            .items_center()
+            .justify_center()
+            .cursor_pointer()
+            .when(on, (e) => e.bg(t.selected))
+            .hover((s) => s.bg(on ? t.selected : t.hover))
+            .on_hover((hovered, cx) => {
+              const next = hovered ? item.id : (this.hoveredTip === item.id ? null : this.hoveredTip);
+              if (next !== this.hoveredTip) {
+                this.hoveredTip = next;
+                cx.notify();
+              }
+            })
+            .on_mouse_down("left", (_ev, cx) => {
+              cx.stop_propagation();
+              this.hoveredTip = null;
+              if (on) {
+                run("layout.hide", { id: "panel" });
+              } else {
+                run("layout.select", { stack: "panel-body", child: item.id });
+                run("layout.show", { id: "panel" });
+              }
+            })
+            .when(on, (e) =>
+              e.child(
+                div()
+                  .absolute()
+                  .left(-4)
+                  .w(2)
+                  .h(16)
+                  .rounded(1)
+                  .bg(t.accent)
+              )
+            )
+            .child(
+              svg(item.icon)
+                .size(16)
+                .text_color(on ? t.foreground : t.muted)
+            );
+
+          return Popup.new(`tip-act-${item.id}`, btn)
+            .anchor("bottom_right")
+            .when(this.hoveredTip === item.id, (el) =>
+              el.content(
+                div()
+                  .px(8)
+                  .py(4)
+                  .mb(6)
+                  .rounded(6)
+                  .border_1()
+                  .border_color(t.border)
+                  .bg(t.popover ?? t.surface)
+                  .text_size(11.5)
+                  .text_color(t.foreground)
+                  .child(item.label)
+              )
+            );
+        })
+      );
+  }
+}
