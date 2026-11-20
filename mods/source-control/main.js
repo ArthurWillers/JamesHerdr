@@ -30,10 +30,12 @@ const DEFAULT_PROMPT =
   "Analyze the git diff below and write a git commit message following the Conventional Commits specification:\n" +
   "1. First line: <type>(<optional scope>): <concise summary in imperative mood, max 72 chars>\n" +
   "2. Second line: blank\n" +
-  "3. Body: concise bullet points (- ...) explaining the key changes and why they were made.\n\n" +
-  "Rules:\n" +
+  "3. Body: concise bullet points (- ...) explaining the key changes and why they were made.";
+
+const FIXED_RULES =
+  "Rules (mandatory):\n" +
   "- Output ONLY the raw commit message text (no markdown code fences, no commentary, no intro/outro).\n" +
-  "- Do NOT run any commands or tools.";
+  "- Do NOT run any commands, tools, or modify any files.";
 
 const ICON = {
   branch: "mods/workspace-chrome/branch.svg",
@@ -902,42 +904,74 @@ export default class JamesChanges extends View {
     cx.spawn(async (cx) => {
       try {
         const useStaged = this.staged.length > 0;
-        const statusRes = await exec(
-          "git",
-          useStaged
-            ? [...READ, "diff", "--cached", "--stat"]
-            : [...READ, "status", "--short"],
-          { cwd: root, on }
-        );
-        const diffArgs = useStaged
-          ? [...READ, "diff", "--cached", "--no-color", "--no-ext-diff"]
-          : [...READ, "diff", "HEAD", "--no-color", "--no-ext-diff"];
-        const diffRes = await exec("git", diffArgs, { cwd: root, on });
+        const [statusRes, statRes, diffRes] = await Promise.all([
+          exec(
+            "git",
+            useStaged
+              ? [...READ, "diff", "--cached", "--name-status"]
+              : [...READ, "status", "--short"],
+            { cwd: root, on }
+          ),
+          exec(
+            "git",
+            useStaged
+              ? [...READ, "diff", "--cached", "--stat"]
+              : [...READ, "diff", "HEAD", "--stat"],
+            { cwd: root, on }
+          ),
+          exec(
+            "git",
+            useStaged
+              ? [...READ, "diff", "--cached", "--no-color", "--no-ext-diff"]
+              : [...READ, "diff", "HEAD", "--no-color", "--no-ext-diff"],
+            { cwd: root, on }
+          ),
+        ]);
 
         let diffText = (diffRes.stdout || "").trim();
         if (!useStaged && !diffText && this.unstaged.some((f) => f.fresh)) {
           const previews = [];
-          for (const f of this.unstaged.filter((u) => u.fresh).slice(0, 10)) {
+          for (const f of this.unstaged.filter((u) => u.fresh).slice(0, 12)) {
             const content = await readTextFile(`${root}/${f.path}`, {
               on,
             }).catch(() => "");
             previews.push(
-              `--- New file: ${f.path} ---\n${(content ?? "").slice(0, 1500)}`
+              `--- New file: ${f.path} ---\n${(content ?? "").slice(0, 1200)}`
             );
           }
           diffText = previews.join("\n\n");
         }
 
-        if (!diffText && !(statusRes.stdout || "").trim()) {
+        const statusOut = (statusRes.stdout || "").trim();
+        const statOut = (statRes.stdout || "").trim();
+        if (!diffText && !statusOut && !statOut) {
           throw new Error("No uncommitted changes to analyze.");
+        }
+
+        // Balance diff budget across all changed files when the diff is large
+        const MAX_DIFF = 16000;
+        let balancedDiff = diffText;
+        if (diffText.length > MAX_DIFF) {
+          const chunks = diffText.split(/(?=^diff --git )/m).filter(Boolean);
+          if (chunks.length > 1) {
+            const perFile = Math.max(600, Math.floor(MAX_DIFF / chunks.length));
+            balancedDiff = chunks
+              .map((c) =>
+                c.length > perFile ? c.slice(0, perFile) + "\n… (file diff truncated)" : c
+              )
+              .join("\n")
+              .slice(0, MAX_DIFF);
+          } else {
+            balancedDiff = diffText.slice(0, MAX_DIFF);
+          }
         }
 
         const fullPrompt =
           `${promptText}\n\n` +
-          `Git status (${useStaged ? "staged" : "working tree"}):\n${(
-            statusRes.stdout || ""
-          ).trim()}\n\n` +
-          `Git diff (truncated to 12,000 chars):\n${diffText.slice(0, 12000)}`;
+          `${FIXED_RULES}\n\n` +
+          `Git status (${useStaged ? "staged only" : "working tree"}):\n${statusOut}\n\n` +
+          (statOut ? `Diff stat:\n${statOut}\n\n` : "") +
+          `Git diff:\n${balancedDiff}`;
 
         const pathPrefix =
           'export PATH="$HOME/.local/share/mise/installs/antigravity-cli/latest:$HOME/.local/share/mise/command-wrappers/bin:$HOME/.local/share/mise/shims:$HOME/.local/bin:/usr/local/bin:/usr/bin:$PATH"; ';

@@ -35,10 +35,7 @@ export const DEFAULT_PROMPT =
   "Analyze the git diff below and write a git commit message following the Conventional Commits specification:\n" +
   "1. First line: <type>(<optional scope>): <concise summary in imperative mood, max 72 chars>\n" +
   "2. Second line: blank\n" +
-  "3. Body: concise bullet points (- ...) explaining the key changes and why they were made.\n\n" +
-  "Rules:\n" +
-  "- Output ONLY the raw commit message text (no markdown code fences, no commentary, no intro/outro).\n" +
-  "- Do NOT run any commands or tools.";
+  "3. Body: concise bullet points (- ...) explaining the key changes and why they were made.";
 
 const PATH_EXPORT =
   'export PATH="$HOME/.local/share/mise/installs/antigravity-cli/latest:$HOME/.local/share/mise/command-wrappers/bin:$HOME/.local/share/mise/shims:$HOME/.local/bin:/usr/local/bin:/usr/bin:$PATH"; ';
@@ -97,7 +94,10 @@ export default class JamesSettings extends View {
     const saved = shared("james-changes.ai") ?? {};
     this.provider = saved.provider ? normKey(saved.provider) : "";
     this.model = saved.model ?? "";
-    this.prompt = saved.prompt ?? DEFAULT_PROMPT;
+    const rawSavedPrompt = saved.prompt ?? DEFAULT_PROMPT;
+    this.prompt = rawSavedPrompt.includes("Rules:\n- Output ONLY the raw commit message text")
+      ? DEFAULT_PROMPT
+      : rawSavedPrompt;
     this.defaultAgent = shared("james.defaultAgent") ?? null;
     this.allInstalledAgents = shared("james-settings.allAgents") ?? [];
 
@@ -142,7 +142,9 @@ export default class JamesSettings extends View {
           'CLEAN_PATH=$(printf "%s" "$PATH" | tr ":" "\\n" | grep -vE "mise/(shims|command-wrappers)" | tr "\\n" ":"); ' +
           "check_one() { " +
           '  key="$1"; bin="$2"; mdir="$3"; ' +
-          '  if [ -e "$HOME/.local/share/mise/installs/$mdir/latest" ] || PATH="$CLEAN_PATH:$HOME/.local/bin:/usr/local/bin:/usr/bin" command -v "$bin" >/dev/null 2>&1; then ' +
+          '  if [ -e "$HOME/.local/share/mise/installs/$mdir/latest" ]; then printf "%s\\n" "$key"; return; fi; ' +
+          '  p=$(PATH="$CLEAN_PATH:$HOME/.local/bin:/usr/local/bin:/usr/bin" command -v "$bin" 2>/dev/null || true); ' +
+          '  if [ -n "$p" ] && ! { head -c 2 "$p" 2>/dev/null | grep -q "^#!" && grep -q "mise" "$p" 2>/dev/null; }; then ' +
           '    printf "%s\\n" "$key"; ' +
           "  fi; " +
           "}; " +
