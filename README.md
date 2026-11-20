@@ -47,6 +47,25 @@ ln -sfn ~/Code/JamesHerdr/scripts/omarchy-theme-sync.sh ~/.config/herdr-app/scri
 herdr-app do app.layout '{"name":"JamesHerdr"}'
 ```
 
+### Or just paste this prompt to your AI agent
+
+```text
+Install and configure the JamesHerdr layout for Herdr on this machine:
+
+1. Clone https://github.com/ArthurWillers/JamesHerdr.git into ~/Code/JamesHerdr (or pull latest if it already exists).
+2. Create ~/.config/herdr-app/{layouts,mods,themes,scripts} and symlink:
+   - layouts/JamesHerdr.json -> ~/.config/herdr-app/layouts/JamesHerdr.json
+   - every folder in mods/* -> ~/.config/herdr-app/mods/
+   - every file in themes/*.json -> ~/.config/herdr-app/themes/
+   - scripts/omarchy-theme-sync.sh -> ~/.config/herdr-app/scripts/omarchy-theme-sync.sh (ensure it is executable with chmod +x).
+3. Validate all installed mods by running `herdr-app check` on each symlinked mod in ~/.config/herdr-app/mods/.
+4. Check if this system runs Omarchy with ~/.config/omarchy/hooks/theme-set.d:
+   - If yes, symlink ~/.config/herdr-app/scripts/omarchy-theme-sync.sh to ~/.config/omarchy/hooks/theme-set.d/herdr-theme-sync and run it once so Herdr syncs with the current Omarchy theme (including generating a custom theme JSON on the fly if the active theme uses colors.toml).
+   - If not on Omarchy, skip the hook step.
+5. If Herdr is running, switch to the JamesHerdr layout with: herdr-app do app.layout '{"name":"JamesHerdr"}'.
+6. Report the installed paths, check results, and whether Omarchy theme sync was enabled.
+```
+
 ## Omarchy Theme Sync
 
 JamesHerdr includes native Omarchy theme synchronization **without external plugins**:
