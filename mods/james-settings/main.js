@@ -4,6 +4,8 @@ import {
   h_flex,
   TextareaState,
   Textarea,
+  InputState,
+  Input,
   Popup,
   ScrollHandle,
   Scrollbar,
@@ -19,6 +21,7 @@ import {
   checking,
   run,
 } from "herdr";
+import { tr, SUPPORTED_LANGS, currentLang } from "./i18n.js";
 
 const ICON = {
   sliders: "mods/source-control/icons/sliders.svg",
@@ -117,6 +120,52 @@ export default class JamesSettings extends View {
     this.loadingModels = false;
     this.modelMenuOpen = false;
     this.modelScroll = ScrollHandle.new();
+    this.modelPopupFocus = cx.focus_handle();
+    this.modelSearch = "";
+    this.modelHighlightIdx = 0;
+    this.modelSearchInput = InputState.new({
+      placeholder: tr("set.ai_model_search"),
+    });
+    this.modelSearchInput.on("change", (_ev, cx) => {
+      this.modelSearch = this.modelSearchInput.value();
+      this.modelHighlightIdx = 0;
+      cx.notify();
+    });
+    this.modelSearchInput.on("submit", (_ev, cx) => {
+      const list = this.filteredModelOptions();
+      const pick = list[this.modelHighlightIdx] ?? list[0];
+      if (pick) {
+        this.model = pick.value;
+        this.modelMenuOpen = false;
+        this.save();
+        this.handle.focus();
+        cx.notify();
+      }
+    });
+
+    this.langMenuOpen = false;
+    this.langScroll = ScrollHandle.new();
+    this.langPopupFocus = cx.focus_handle();
+    this.langSearch = "";
+    this.langHighlightIdx = 0;
+    this.langSearchInput = InputState.new({
+      placeholder: tr("set.lang_search"),
+    });
+    this.langSearchInput.on("change", (_ev, cx) => {
+      this.langSearch = this.langSearchInput.value();
+      this.langHighlightIdx = 0;
+      cx.notify();
+    });
+    this.langSearchInput.on("submit", (_ev, cx) => {
+      const list = this.filteredLangOptions();
+      const pick = list[this.langHighlightIdx] ?? list[0];
+      if (pick) {
+        setShared("james.langMode", pick.value);
+        this.langMenuOpen = false;
+        this.handle.focus();
+        cx.notify();
+      }
+    });
     this.omarchyInfo = {
       checked: false,
       supported: Boolean(shared("james-settings.omarchySupported")),
@@ -127,7 +176,7 @@ export default class JamesSettings extends View {
     };
 
     this.promptInput = TextareaState.new({
-      placeholder: "Commit message generation instructions...",
+      placeholder: tr("set.ai_prompt_placeholder"),
       value: this.prompt,
       rows: 7,
     });
@@ -158,7 +207,7 @@ export default class JamesSettings extends View {
         const [sup, hook, slug] = (r.stdout ?? "").trim().split("|");
         const supported = sup === "1";
         setShared("james-settings.omarchySupported", supported);
-        if (!supported && this.section === "omarchy-theme") {
+        if (!supported && this.section === "omarchy") {
           this.section = "default-agent";
         }
         this.omarchyInfo = {
@@ -204,8 +253,8 @@ export default class JamesSettings extends View {
             hookInstalled: install,
             busy: false,
             statusMsg: install
-              ? "Hook installed and synced with current Omarchy theme."
-              : "Hook removed.",
+              ? tr("set.om_hook_installed_msg")
+              : tr("set.om_hook_removed_msg"),
           };
         } else {
           this.omarchyInfo = {
@@ -248,7 +297,9 @@ export default class JamesSettings extends View {
             ...this.omarchyInfo,
             currentTheme: slug || this.omarchyInfo.currentTheme,
             busy: false,
-            statusMsg: slug ? `Synced theme: ${slug}` : "Theme synced.",
+            statusMsg: slug
+              ? tr("set.om_synced_theme", { theme: slug })
+              : tr("set.om_synced"),
           };
         } else {
           this.omarchyInfo = {
@@ -417,15 +468,125 @@ export default class JamesSettings extends View {
     cx.notify();
   }
 
-  renderModelSelect(t) {
-    const options = ["", ...this.discoveredModels];
-    if (this.model && !options.includes(this.model)) {
-      options.splice(1, 0, this.model);
+  filteredModelOptions() {
+    const raw = ["", ...this.discoveredModels];
+    if (this.model && !raw.includes(this.model)) {
+      raw.splice(1, 0, this.model);
     }
-    const currentLabel = this.model || "Auto (CLI Default)";
+    const q = this.modelSearch.trim().toLowerCase();
+    const mapped = raw.map((m) => ({
+      value: m,
+      label: m || tr("set.ai_auto"),
+      meta: "",
+    }));
+    return q
+      ? mapped.filter(
+          (o) =>
+            o.label.toLowerCase().includes(q) ||
+            o.value.toLowerCase().includes(q)
+        )
+      : mapped;
+  }
+
+  filteredLangOptions() {
+    const q = this.langSearch.trim().toLowerCase();
+    const mapped = SUPPORTED_LANGS.map((l) => ({
+      value: l.code,
+      label: l.name,
+      meta: l.code === "auto" ? l.englishName : `${l.englishName} · ${l.code}`,
+      searchText: `${l.code} ${l.name} ${l.englishName}`.toLowerCase(),
+    }));
+    return q ? mapped.filter((o) => o.searchText.includes(q)) : mapped;
+  }
+
+  handleActiveSelectKey(e, cx) {
+    const isModel = this.modelMenuOpen;
+    const isLang = this.langMenuOpen;
+    if (!isModel && !isLang) return false;
+
+    const options = isModel
+      ? this.filteredModelOptions()
+      : this.filteredLangOptions();
+    const curIdx = isModel ? this.modelHighlightIdx : this.langHighlightIdx;
+    const clampedIdx =
+      options.length === 0 ? 0 : Math.max(0, Math.min(curIdx, options.length - 1));
+    const scrollHandle = isModel ? this.modelScroll : this.langScroll;
+    const setIdx = (next) => {
+      if (isModel) this.modelHighlightIdx = next;
+      else this.langHighlightIdx = next;
+    };
+    const closeMenu = () => {
+      if (isModel) this.modelMenuOpen = false;
+      else this.langMenuOpen = false;
+      this.handle.focus();
+      cx.notify();
+    };
+
+    const k = (e.key ?? "").toLowerCase();
+    if (k === "escape") {
+      cx.stop_propagation();
+      closeMenu();
+      return true;
+    }
+    if (k === "down" || k === "arrowdown") {
+      cx.stop_propagation();
+      if (options.length > 0) {
+        const next = (clampedIdx + 1) % options.length;
+        setIdx(next);
+        scrollHandle.scroll_to_item(next);
+        cx.notify();
+      }
+      return true;
+    }
+    if (k === "up" || k === "arrowup") {
+      cx.stop_propagation();
+      if (options.length > 0) {
+        const next = (clampedIdx - 1 + options.length) % options.length;
+        setIdx(next);
+        scrollHandle.scroll_to_item(next);
+        cx.notify();
+      }
+      return true;
+    }
+    if (k === "enter" || k === "return") {
+      cx.stop_propagation();
+      const pick = options[clampedIdx];
+      if (pick) {
+        if (isModel) {
+          this.model = pick.value;
+          this.save();
+        } else {
+          setShared("james.langMode", pick.value);
+        }
+        closeMenu();
+      }
+      return true;
+    }
+    return false;
+  }
+
+  renderSearchableSelect(t, cfg) {
+    const {
+      idPrefix,
+      open,
+      setOpen,
+      popupFocus,
+      triggerLabel,
+      triggerIcon,
+      options,
+      selectedValue,
+      onSelect,
+      searchInput,
+      scrollHandle,
+      highlightIdx,
+      emptyText,
+    } = cfg;
+
+    const clampedIdx =
+      options.length === 0 ? 0 : Math.max(0, Math.min(highlightIdx, options.length - 1));
 
     const trigger = h_flex()
-      .id("settings-model-select-trigger")
+      .id(`${idPrefix}-trigger`)
       .w_full()
       .h(32)
       .px(10)
@@ -435,13 +596,13 @@ export default class JamesSettings extends View {
       .justify_between()
       .cursor_pointer()
       .border_1()
-      .border_color(this.modelMenuOpen ? t.accent : t.border)
+      .border_color(open ? t.accent : t.border)
       .bg(t.canvas ?? t.raised)
       .hover((s) => s.bg(t.hover))
       .on_mouse_down("left", (_ev, cx) => {
         cx.stop_propagation();
-        this.modelMenuOpen = !this.modelMenuOpen;
-        cx.notify();
+        const nextOpen = !open;
+        setOpen(nextOpen, cx);
       })
       .child(
         h_flex()
@@ -449,7 +610,7 @@ export default class JamesSettings extends View {
           .min_w(0)
           .gap(7)
           .items_center()
-          .child(svg(ICON.sparkles).size(12).flex_none().text_color(t.accent))
+          .when(Boolean(triggerIcon), (el) => el.child(triggerIcon))
           .child(
             div()
               .flex_1()
@@ -457,88 +618,239 @@ export default class JamesSettings extends View {
               .truncate()
               .text_size(12)
               .text_color(t.foreground)
-              .child(currentLabel)
+              .child(triggerLabel)
           )
       )
-      .child(
-        svg(ICON.chevronDown)
-          .size(12)
-          .flex_none()
-          .text_color(t.muted)
-      );
+      .child(svg(ICON.chevronDown).size(12).flex_none().text_color(t.muted));
 
-    return Popup.new("settings-model-select-popup", trigger)
+    return Popup.new(`${idPrefix}-popup`, trigger)
       .anchor("bottom_left")
-      .when(this.modelMenuOpen, (el) =>
+      .when(open, (el) =>
         el.content(
-          div()
+          v_flex()
+            .id(`${idPrefix}-surface`)
+            .track_focus(popupFocus)
             .w(396)
-            .h(Math.min(210, options.length * 30 + 10))
-            .relative()
+            .h(Math.min(268, Math.max(110, options.length * 30 + 50)))
             .rounded(8)
             .border_1()
             .border_color(t.border)
             .bg(t.popover ?? t.background)
             .on_mouse_down_out((_e, cx) => {
-              this.modelMenuOpen = false;
-              cx.notify();
+              setOpen(false, cx);
+            })
+            .on_key_down((e, cx) => {
+              this.handleActiveSelectKey(e, cx);
             })
             .child(
-              v_flex()
-                .id("settings-model-select-menu")
-                .absolute()
-                .inset_0()
-                .p(4)
-                .gap(2)
-                .overflow_y_scroll()
-                .track_scroll(this.modelScroll)
-                .children(
-                  options.map((m, idx) => {
-                    const active = this.model === m;
-                    const label = m || "Auto (CLI Default)";
-                    return h_flex()
-                      .id(`model-opt-${idx}`)
-                      .h(28)
-                      .flex_none()
-                      .px(8)
-                      .gap(8)
-                      .rounded(6)
-                      .items_center()
-                      .cursor_pointer()
-                      .when(active, (s) => s.bg(t.selected))
-                      .hover((s) => s.bg(t.hover))
-                      .on_mouse_down("left", (_ev, cx) => {
-                        cx.stop_propagation();
-                        this.model = m;
-                        this.modelMenuOpen = false;
-                        this.save();
-                        cx.notify();
-                      })
-                      .child(
-                        active
-                          ? svg(ICON.check).size(12).flex_none().text_color(t.accent)
-                          : div().w(12).flex_none()
-                      )
-                      .child(
-                        div()
-                          .flex_1()
-                          .min_w(0)
-                          .truncate()
-                          .text_size(12)
-                          .font_weight(active ? 500 : 400)
-                          .text_color(active ? t.foreground : t.muted)
-                          .child(label)
-                      );
-                  })
+              div()
+                .px(6)
+                .py(6)
+                .border_b(1)
+                .border_color(t.border)
+                .on_mouse_down("left", (_e, cx) => {
+                  cx.stop_propagation();
+                  searchInput.focus();
+                })
+                .child(
+                  Input.new(searchInput)
+                    .w_full()
+                    .h(28)
+                    .px(8)
+                    .rounded(6)
+                    .border_1()
+                    .border_color(t.accent)
+                    .bg(t.canvas ?? t.background)
+                    .text_size(12)
+                    .text_color(t.foreground)
                 )
             )
             .child(
-              Scrollbar.vertical("settings-model-select-menu")
-                .absolute()
-                .inset_0()
+              div()
+                .flex_1()
+                .min_h(0)
+                .relative()
+                .child(
+                  v_flex()
+                    .id(`${idPrefix}-menu`)
+                    .absolute()
+                    .inset_0()
+                    .p(4)
+                    .gap(2)
+                    .overflow_y_scroll()
+                    .track_scroll(scrollHandle)
+                    .when(options.length === 0, (list) =>
+                      list.child(
+                        div()
+                          .px(10)
+                          .py(12)
+                          .text_size(11.5)
+                          .text_color(t.dim)
+                          .child(emptyText)
+                      )
+                    )
+                    .children(
+                      options.map((opt, idx) => {
+                        const active = selectedValue === opt.value;
+                        const highlighted = idx === clampedIdx;
+                        return h_flex()
+                          .id(`${idPrefix}-opt-${idx}`)
+                          .h(28)
+                          .flex_none()
+                          .px(8)
+                          .gap(8)
+                          .rounded(6)
+                          .items_center()
+                          .cursor_pointer()
+                          .when(active, (s) => s.bg(t.selected))
+                          .when(!active && highlighted, (s) => s.bg(t.hover))
+                          .hover((s) => s.bg(t.hover))
+                          .on_mouse_down("left", (_ev, cx) => {
+                            cx.stop_propagation();
+                            onSelect(opt.value, cx);
+                            setOpen(false, cx);
+                          })
+                          .child(
+                            active
+                              ? svg(ICON.check)
+                                  .size(12)
+                                  .flex_none()
+                                  .text_color(t.accent)
+                              : div().w(12).flex_none()
+                          )
+                          .child(
+                            div()
+                              .flex_1()
+                              .min_w(0)
+                              .truncate()
+                              .text_size(12)
+                              .font_weight(active ? 500 : 400)
+                              .text_color(active ? t.foreground : t.muted)
+                              .child(opt.label)
+                          )
+                          .when(Boolean(opt.meta), (row) =>
+                            row.child(
+                              div()
+                                .flex_none()
+                                .text_size(10.5)
+                                .text_color(t.dim)
+                                .child(opt.meta)
+                            )
+                          );
+                      })
+                    )
+                )
+                .child(
+                  Scrollbar.vertical(`${idPrefix}-menu`)
+                    .absolute()
+                    .inset_0()
+                )
             )
         )
       );
+  }
+
+  renderModelSelect(t) {
+    const options = this.filteredModelOptions();
+    const currentLabel = this.model || tr("set.ai_auto");
+    return this.renderSearchableSelect(t, {
+      idPrefix: "settings-model-select",
+      open: this.modelMenuOpen,
+      popupFocus: this.modelPopupFocus,
+      setOpen: (next, cx) => {
+        this.modelMenuOpen = next;
+        if (next) {
+          this.langMenuOpen = false;
+          this.modelSearch = "";
+          this.modelSearchInput.set_value("");
+          const curIdx = this.filteredModelOptions().findIndex(
+            (o) => o.value === this.model
+          );
+          this.modelHighlightIdx = curIdx >= 0 ? curIdx : 0;
+          this.modelSearchInput.focus();
+          cx.timer.after(20, () => {
+            if (this.modelMenuOpen) {
+              this.modelSearchInput.focus();
+              this.modelScroll.scroll_to_item(this.modelHighlightIdx);
+            }
+          });
+          cx.timer.after(90, () => {
+            if (this.modelMenuOpen) this.modelSearchInput.focus();
+          });
+        } else {
+          this.handle.focus();
+        }
+        cx.notify();
+      },
+      triggerLabel: currentLabel,
+      triggerIcon: svg(ICON.sparkles).size(12).flex_none().text_color(t.accent),
+      options,
+      selectedValue: this.model,
+      onSelect: (val) => {
+        this.model = val;
+        this.save();
+      },
+      searchInput: this.modelSearchInput,
+      scrollHandle: this.modelScroll,
+      highlightIdx: this.modelHighlightIdx,
+      emptyText: tr("set.ai_model_empty"),
+    });
+  }
+
+  renderLanguageSelect(t) {
+    const mode = shared("james.langMode") ?? "auto";
+    const active = currentLang();
+    const activeObj = SUPPORTED_LANGS.find((l) => l.code === active);
+    const selectedObj = SUPPORTED_LANGS.find((l) => l.code === mode);
+    const triggerLabel =
+      mode === "auto"
+        ? `${selectedObj?.name ?? "Auto (System)"} — ${activeObj?.name ?? active}`
+        : selectedObj
+          ? `${selectedObj.name} (${selectedObj.code})`
+          : mode;
+    const options = this.filteredLangOptions();
+
+    return this.renderSearchableSelect(t, {
+      idPrefix: "settings-lang-select",
+      open: this.langMenuOpen,
+      popupFocus: this.langPopupFocus,
+      setOpen: (next, cx) => {
+        this.langMenuOpen = next;
+        if (next) {
+          this.modelMenuOpen = false;
+          this.langSearch = "";
+          this.langSearchInput.set_value("");
+          const curIdx = this.filteredLangOptions().findIndex(
+            (o) => o.value === mode
+          );
+          this.langHighlightIdx = curIdx >= 0 ? curIdx : 0;
+          this.langSearchInput.focus();
+          cx.timer.after(20, () => {
+            if (this.langMenuOpen) {
+              this.langSearchInput.focus();
+              this.langScroll.scroll_to_item(this.langHighlightIdx);
+            }
+          });
+          cx.timer.after(90, () => {
+            if (this.langMenuOpen) this.langSearchInput.focus();
+          });
+        } else {
+          this.handle.focus();
+        }
+        cx.notify();
+      },
+      triggerLabel,
+      triggerIcon: null,
+      options,
+      selectedValue: mode,
+      onSelect: (val) => {
+        setShared("james.langMode", val);
+      },
+      searchInput: this.langSearchInput,
+      scrollHandle: this.langScroll,
+      highlightIdx: this.langHighlightIdx,
+      emptyText: tr("set.lang_empty"),
+    });
   }
 
   render() {
@@ -595,13 +907,8 @@ export default class JamesSettings extends View {
       .text_size(13)
       .track_focus(this.handle)
       .on_key_down((e, cx) => {
+        if (this.handleActiveSelectKey(e, cx)) return;
         if (e.key === "escape") {
-          if (this.modelMenuOpen) {
-            this.modelMenuOpen = false;
-            cx.stop_propagation();
-            cx.notify();
-            return;
-          }
           closeOverlay(props()?.overlay);
         }
       })
@@ -624,10 +931,10 @@ export default class JamesSettings extends View {
                 div()
                   .text_size(13.5)
                   .font_weight(600)
-                  .child("JamesHerdr Settings")
+                  .child(tr("set.title"))
               )
           )
-          .child(tipAbove("close-settings", "Close Settings (Esc)", closeBtn, t))
+          .child(tipAbove("close-settings", "Esc", closeBtn, t))
       )
       .child(
         // Modal Body: Left Sidebar + Right Content
@@ -653,12 +960,13 @@ export default class JamesSettings extends View {
                   .text_size(10.5)
                   .font_weight(600)
                   .text_color(t.dim)
-                  .child("MODULES")
+                  .child(tr("set.modules"))
               )
-              .child(navItem("default-agent", ICON.sparkles, "Default Agent"))
-              .child(navItem("ai-commit", ICON.sliders, "AI Commit"))
+              .child(navItem("default-agent", ICON.sparkles, tr("set.nav_default_agent")))
+              .child(navItem("ai-commit", ICON.sliders, tr("set.nav_ai_commit")))
+              .child(navItem("language", ICON.refresh, tr("set.nav_language")))
               .when(this.omarchyInfo.supported, (sb) =>
-                sb.child(navItem("omarchy-theme", ICON.refresh, "Omarchy Theme"))
+                sb.child(navItem("omarchy", ICON.refresh, tr("set.nav_omarchy")))
               )
           )
           .when(this.section === "default-agent", (panel) =>
@@ -679,15 +987,13 @@ export default class JamesSettings extends View {
                         .text_size(12.5)
                         .font_weight(600)
                         .text_color(t.foreground)
-                        .child("Default Agent (New Menu & Shortcut)")
+                        .child(tr("set.da_title"))
                     )
                     .child(
                       div()
                         .text_size(11.5)
                         .text_color(t.muted)
-                        .child(
-                          "Appears at the top of the + menu and launches directly with Ctrl+Shift+A."
-                        )
+                        .child(tr("set.da_desc"))
                     )
                 )
                 .child(
@@ -771,7 +1077,7 @@ export default class JamesSettings extends View {
                           .text_size(12)
                           .font_weight(600)
                           .text_color(t.foreground)
-                          .child("Installed Agents")
+                          .child(tr("set.ai_provider"))
                       )
                       .when(this.loadingAgents, (e) =>
                         e.child(
@@ -835,7 +1141,7 @@ export default class JamesSettings extends View {
                       div()
                         .text_size(12)
                         .text_color(t.dim)
-                        .child("No supported AI CLI agents detected.")
+                        .child(tr("set.ai_no_agents"))
                     )
                   )
               )
@@ -856,7 +1162,7 @@ export default class JamesSettings extends View {
                               .text_size(12)
                               .font_weight(600)
                               .text_color(t.foreground)
-                              .child("Model")
+                              .child(tr("set.ai_model"))
                           )
                           .child(
                             div()
@@ -897,7 +1203,7 @@ export default class JamesSettings extends View {
                                   .spin(900)
                               : svg(ICON.refresh).size(11).text_color(t.muted)
                           )
-                          .child(div().child("Refresh"))
+                          .child(div().child(tr("set.ai_refresh")))
                       )
                   )
                   .child(this.renderModelSelect(t))
@@ -917,7 +1223,7 @@ export default class JamesSettings extends View {
                           .text_size(12)
                           .font_weight(600)
                           .text_color(t.foreground)
-                          .child("Commit Prompt Template")
+                          .child(tr("set.ai_prompt"))
                       )
                       .child(
                         h_flex()
@@ -942,7 +1248,7 @@ export default class JamesSettings extends View {
                             cx.notify();
                           })
                           .child(svg(ICON.undo).size(11).text_color(t.muted))
-                          .child(div().child("Reset to Default"))
+                          .child(div().child(tr("set.ai_reset")))
                       )
                   )
                   .child(
@@ -966,7 +1272,58 @@ export default class JamesSettings extends View {
               )
             )
           )
-          .when(this.section === "omarchy-theme", (panel) => {
+          .when(this.section === "language", (panel) => {
+            const active = currentLang();
+            const activeObj = SUPPORTED_LANGS.find((l) => l.code === active);
+            return panel.child(
+              v_flex()
+                .flex_1()
+                .w_full()
+                .min_w(0)
+                .h_full()
+                .min_h(0)
+                .justify_start()
+                .p(16)
+                .gap(16)
+                .overflow_y_scroll()
+                .child(
+                  v_flex()
+                    .w_full()
+                    .min_w(0)
+                    .gap(4)
+                    .child(
+                      div()
+                        .w_full()
+                        .text_size(12.5)
+                        .font_weight(600)
+                        .text_color(t.foreground)
+                        .child(tr("set.lang_title"))
+                    )
+                    .child(
+                      div()
+                        .w_full()
+                        .text_size(11.5)
+                        .text_color(t.muted)
+                        .child(tr("set.lang_desc"))
+                    )
+                    .child(
+                      div()
+                        .w_full()
+                        .text_size(11)
+                        .text_color(t.dim)
+                        .child(
+                          tr("set.lang_active", {
+                            lang: activeObj
+                              ? `${activeObj.name} (${active})`
+                              : active,
+                          })
+                        )
+                    )
+                )
+                .child(this.renderLanguageSelect(t))
+            );
+          })
+          .when(this.section === "omarchy", (panel) => {
             const info = this.omarchyInfo;
             return panel.child(
               v_flex()
@@ -990,16 +1347,14 @@ export default class JamesSettings extends View {
                         .text_size(12.5)
                         .font_weight(600)
                         .text_color(t.foreground)
-                        .child("Omarchy Theme Sync")
+                        .child(tr("set.om_title"))
                     )
                     .child(
                       div()
                         .w_full()
                         .text_size(11.5)
                         .text_color(t.muted)
-                        .child(
-                          "Automatically sync Herdr with Omarchy theme changes. Custom Omarchy themes with colors.toml are generated on the fly into ~/.config/herdr-app/themes/."
-                        )
+                        .child(tr("set.om_desc"))
                     )
                 )
                 .child(
@@ -1029,7 +1384,7 @@ export default class JamesSettings extends View {
                                 .text_size(12)
                                 .font_weight(600)
                                 .text_color(t.foreground)
-                                .child("Omarchy theme-set Hook")
+                                .child(tr("set.om_hook_title"))
                             )
                             .child(
                               div()
@@ -1038,11 +1393,11 @@ export default class JamesSettings extends View {
                                 .child(
                                   info.supported
                                     ? info.currentTheme
-                                      ? `Detected Omarchy (current theme: ${info.currentTheme})`
-                                      : "Detected Omarchy"
+                                      ? tr("set.om_detected_theme", { theme: info.currentTheme })
+                                      : tr("set.om_detected")
                                     : info.checked
-                                      ? "Omarchy not detected on this system"
-                                      : "Checking system..."
+                                      ? tr("set.om_not_detected")
+                                      : tr("set.om_checking")
                                 )
                             )
                         )
@@ -1057,7 +1412,7 @@ export default class JamesSettings extends View {
                             .text_size(11)
                             .font_weight(600)
                             .text_color(info.hookInstalled ? t.foreground : t.muted)
-                            .child(info.hookInstalled ? "Installed" : "Not Installed")
+                            .child(info.hookInstalled ? tr("set.om_installed") : tr("set.om_not_installed"))
                         )
                     )
                     .child(
@@ -1089,10 +1444,10 @@ export default class JamesSettings extends View {
                                 .child(
                                   div().child(
                                     info.busy
-                                      ? "Working..."
+                                      ? tr("set.om_working")
                                       : info.hookInstalled
-                                        ? "Uninstall Hook"
-                                        : "Install Hook"
+                                        ? tr("set.om_uninstall")
+                                        : tr("set.om_install")
                                   )
                                 )
                             )
@@ -1116,7 +1471,7 @@ export default class JamesSettings extends View {
                                   this.syncOmarchyThemeNow(cx);
                                 })
                                 .child(svg(ICON.refresh).size(12).text_color(t.muted))
-                                .child(div().child("Sync Now"))
+                                .child(div().child(tr("set.om_sync_now")))
                             )
                         )
                     )
