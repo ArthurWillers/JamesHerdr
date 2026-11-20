@@ -4,9 +4,10 @@ Personal [Herdr](https://herdr.dev) workspace layout, mods, and [Omarchy](https:
 
 ## Features
 
-- **`activity-bar`**: Icon-only right navigation rail with tooltips to toggle `Files`, `Source Control`, `To-do`, `Runbook`, and `Notes` panels.
+- **`activity-bar`**: Icon-only right navigation rail with tooltips to toggle `Dashboard`, `Files`, `Source Control`, `To-do`, `Runbook`, and `Notes` panels.
+- **`james-dashboard`**: Cockpit-style General Overview panel with live agent status counters/jump list, General to-dos, Global runbook shortcuts, General notes preview, and Spaces/Machines status.
 - **`james-files`**: Lazy file browser with searchable file tree (↑/↓ + Enter), folder/file Git status indicators and tooltips, inline file editor with Auto-Save / `Ctrl+S`, Word Wrap (`Alt+Z`), in-file search, and a character-level inline HEAD Diff view (`Alt+D`) with per-hunk revert.
-- **`james-todos`**: Per-Space and General to-do list with pending counters, filters (`All` / `Pending` / `Done`), and 1-click launch of any task with the configured Default Agent.
+- **`james-todos`**: Per-Space and General to-do list with priorities (`High`/`Medium`/`Low`), expandable task notes, move between Space/General, filters (`All` / `Pending` / `Done`), and 1-click launch of any task (with its notes) using the configured Default Agent.
 - **`james-runbook`**: Per-Space and General command runbook with automatic script detection from `package.json`, `Makefile`, and `Cargo.toml`, plus custom saved commands runnable in a new tab with 1 click.
 - **`james-notes`**: Persistent Markdown scratchpad with per-Space and General scopes and automatic saving (without dirtying the git repository).
 - **`projects-sidebar`**: Collapsible Spaces tree grouped by machine, showing nested tabs, agent icons/spinners, context menus, and a footer shortcut to **JamesHerdr Settings**.
