@@ -24,6 +24,7 @@ import {
   openOverlay,
   checking,
   notify,
+  run,
 } from "herdr";
 
 const DEFAULT_PROMPT =
@@ -52,6 +53,7 @@ const ICON = {
   arrowUp: "mods/source-control/icons/arrow-up.svg",
   refresh: "mods/source-control/icons/refresh.svg",
   cloud: "mods/source-control/icons/cloud.svg",
+  file: "mods/workspace-chrome/file-text.svg",
 };
 
 const GIT_STATUS_KEYS = {
@@ -1081,10 +1083,10 @@ export default class JamesChanges extends View {
       this.open?.staged === f.staged;
     const statusColor =
       f.status === "A" || f.status === "U"
-        ? t.ansi2
+        ? "#73c991"
         : f.status === "D"
-        ? t.ansi1
-        : t.blocked;
+        ? "#f14c4c"
+        : "#4daafc";
 
     const stageToggleBtn = h_flex()
       .id(`stage-toggle-${f.staged ? "s" : "u"}-${f.path}`)
@@ -1143,6 +1145,37 @@ export default class JamesChanges extends View {
       .when(f.del > 0, (e) =>
         e.child(div().text_size(10.5).text_color(t.ansi1).child(`−${f.del}`))
       )
+      .when(f.status !== "D", (e) => {
+        const openBtn = h_flex()
+          .id(`open-file-${f.staged ? "s" : "u"}-${f.path}`)
+          .w(18)
+          .h(18)
+          .rounded(4)
+          .items_center()
+          .justify_center()
+          .hover((s) => s.bg(t.surface))
+          .on_mouse_down("left", (_ev, cx) => {
+            cx.stop_propagation();
+            tipState.id = null;
+            cx.notify();
+            setShared("james-files.openRequest", {
+              root: this.root,
+              path: f.path,
+              ts: Date.now(),
+            });
+            run("layout.select", { stack: "panel-body", child: "files" });
+            run("layout.show", { id: "panel" });
+          })
+          .child(svg(ICON.file).size(11).text_color(t.muted));
+        return e.child(
+          tipAbove(
+            `open-file-${f.staged ? "s" : "u"}-${f.path}`,
+            tr("sc.open_file"),
+            openBtn,
+            t
+          )
+        );
+      })
       .when(!f.staged, (e) => {
         const discardBtn = h_flex()
           .id(`discard-${f.path}`)
@@ -1491,11 +1524,11 @@ export default class JamesChanges extends View {
                 const isSelected =
                   this.open?.commit === c.hash && this.open?.path === f.path;
                 const stColor =
-                  f.status === "A"
-                    ? t.ansi2
+                  f.status === "A" || f.status === "U"
+                    ? "#73c991"
                     : f.status === "D"
-                    ? t.ansi1
-                    : t.blocked;
+                    ? "#f14c4c"
+                    : "#4daafc";
 
                 return h_flex()
                   .id(`graph-file-${c.hash}-${f.path}`)

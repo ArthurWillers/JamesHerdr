@@ -964,6 +964,7 @@ export default class JamesSettings extends View {
               )
               .child(navItem("default-agent", ICON.sparkles, tr("set.nav_default_agent")))
               .child(navItem("ai-commit", ICON.sliders, tr("set.nav_ai_commit")))
+              .child(navItem("files", ICON.sliders, tr("set.nav_files")))
               .child(navItem("language", ICON.refresh, tr("set.nav_language")))
               .when(this.omarchyInfo.supported, (sb) =>
                 sb.child(navItem("omarchy", ICON.refresh, tr("set.nav_omarchy")))
@@ -1272,6 +1273,174 @@ export default class JamesSettings extends View {
               )
             )
           )
+          .when(this.section === "files", (panel) => {
+            const autoSave = shared("james-files.autoSave") !== false;
+            const delay = Number(shared("james-files.autoSaveDelay") ?? 1000);
+            const chip = (id, label, active, onClick) =>
+              h_flex()
+                .id(id)
+                .h(30)
+                .px(12)
+                .gap(6)
+                .rounded(7)
+                .items_center()
+                .cursor_pointer()
+                .border_1()
+                .border_color(active ? t.accent : t.border)
+                .bg(active ? t.selected : t.raised)
+                .text_size(12)
+                .font_weight(active ? 500 : 400)
+                .text_color(active ? t.foreground : t.muted)
+                .hover((s) => s.bg(t.hover))
+                .on_mouse_down("left", (_ev, cx) => {
+                  cx.stop_propagation();
+                  onClick(cx);
+                })
+                .child(div().child(label))
+                .when(active, (el) =>
+                  el.child(svg(ICON.check).size(12).text_color(t.accent))
+                );
+            return panel.child(
+              v_flex()
+                .flex_1()
+                .w_full()
+                .min_w(0)
+                .h_full()
+                .min_h(0)
+                .justify_start()
+                .p(16)
+                .gap(16)
+                .overflow_y_scroll()
+                .child(
+                  v_flex()
+                    .w_full()
+                    .min_w(0)
+                    .gap(4)
+                    .child(
+                      div()
+                        .w_full()
+                        .text_size(12.5)
+                        .font_weight(600)
+                        .text_color(t.foreground)
+                        .child(tr("set.files_title"))
+                    )
+                    .child(
+                      div()
+                        .w_full()
+                        .text_size(11.5)
+                        .text_color(t.muted)
+                        .child(tr("set.files_desc"))
+                    )
+                )
+                .child(
+                  v_flex()
+                    .gap(8)
+                    .child(
+                      div()
+                        .text_size(12)
+                        .font_weight(600)
+                        .text_color(t.foreground)
+                        .child(tr("set.files_autosave"))
+                    )
+                    .child(
+                      h_flex()
+                        .gap(8)
+                        .flex_wrap()
+                        .child(
+                          chip(
+                            "files-autosave-after",
+                            tr("set.files_autosave_after"),
+                            autoSave,
+                            (cx) => {
+                              setShared("james-files.autoSave", true);
+                              cx.notify();
+                            }
+                          )
+                        )
+                        .child(
+                          chip(
+                            "files-autosave-off",
+                            tr("set.files_autosave_off"),
+                            !autoSave,
+                            (cx) => {
+                              setShared("james-files.autoSave", false);
+                              cx.notify();
+                            }
+                          )
+                        )
+                    )
+                )
+                .when(autoSave, (col) =>
+                  col.child(
+                    v_flex()
+                      .gap(8)
+                      .child(
+                        div()
+                          .text_size(12)
+                          .font_weight(600)
+                          .text_color(t.foreground)
+                          .child(tr("set.files_delay"))
+                      )
+                      .child(
+                        h_flex()
+                          .gap(8)
+                          .flex_wrap()
+                          .children(
+                            [500, 1000, 2000, 3000].map((ms) =>
+                              chip(
+                                `files-delay-${ms}`,
+                                `${ms} ms`,
+                                delay === ms,
+                                (cx) => {
+                                  setShared("james-files.autoSaveDelay", ms);
+                                  cx.notify();
+                                }
+                              )
+                            )
+                          )
+                      )
+                  )
+                )
+                .child(
+                  v_flex()
+                    .gap(8)
+                    .child(
+                      div()
+                        .text_size(12)
+                        .font_weight(600)
+                        .text_color(t.foreground)
+                        .child(tr("set.files_word_wrap"))
+                    )
+                    .child(
+                      h_flex()
+                        .gap(8)
+                        .flex_wrap()
+                        .child(
+                          chip(
+                            "files-wrap-on",
+                            tr("set.files_on"),
+                            Boolean(shared("james-files.wordWrap")),
+                            (cx) => {
+                              setShared("james-files.wordWrap", true);
+                              cx.notify();
+                            }
+                          )
+                        )
+                        .child(
+                          chip(
+                            "files-wrap-off",
+                            tr("set.files_off"),
+                            !shared("james-files.wordWrap"),
+                            (cx) => {
+                              setShared("james-files.wordWrap", false);
+                              cx.notify();
+                            }
+                          )
+                        )
+                    )
+                )
+            );
+          })
           .when(this.section === "language", (panel) => {
             const active = currentLang();
             const activeObj = SUPPORTED_LANGS.find((l) => l.code === active);
