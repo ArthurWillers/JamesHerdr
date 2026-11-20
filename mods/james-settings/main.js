@@ -5,7 +5,6 @@ import {
   TextareaState,
   Textarea,
   Popup,
-  HoverCard,
   ScrollHandle,
   Scrollbar,
 } from "gpui-base";
@@ -40,24 +39,32 @@ export const DEFAULT_PROMPT =
 const PATH_EXPORT =
   'export PATH="$HOME/.local/share/mise/installs/antigravity-cli/latest:$HOME/.local/share/mise/command-wrappers/bin:$HOME/.local/share/mise/shims:$HOME/.local/bin:/usr/local/bin:/usr/bin:$PATH"; ';
 
+const tipState = { id: null };
+
 function tipAbove(id, label, triggerEl, t, anchor = "bottom_center") {
-  return HoverCard.new(`tip-${id}`)
+  const trigger = triggerEl.on_hover((hovered, cx) => {
+    const next = hovered ? id : tipState.id === id ? null : tipState.id;
+    if (next !== tipState.id) {
+      tipState.id = next;
+      cx.notify();
+    }
+  });
+  return Popup.new(`tip-${id}`, trigger)
     .anchor(anchor)
-    .open_delay(300)
-    .close_delay(0)
-    .trigger(triggerEl)
-    .content(
-      div()
-        .px(8)
-        .py(4)
-        .mb(4)
-        .rounded(6)
-        .border_1()
-        .border_color(t.border)
-        .bg(t.popover ?? t.surface)
-        .text_size(11.5)
-        .text_color(t.foreground)
-        .child(label)
+    .when(tipState.id === id, (el) =>
+      el.content(
+        div()
+          .px(8)
+          .py(4)
+          .mb(4)
+          .rounded(6)
+          .border_1()
+          .border_color(t.border)
+          .bg(t.popover ?? t.surface)
+          .text_size(11.5)
+          .text_color(t.foreground)
+          .child(label)
+      )
     );
 }
 
