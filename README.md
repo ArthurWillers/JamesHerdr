@@ -4,7 +4,11 @@ Personal [Herdr](https://herdr.dev) workspace layout, mods, and [Omarchy](https:
 
 ## Features
 
-- **`activity-bar`**: Icon-only right navigation rail with tooltips to toggle `Files` and `Source Control` panels.
+- **`activity-bar`**: Icon-only right navigation rail with tooltips to toggle `Files`, `Source Control`, `To-do`, `Runbook`, and `Notes` panels.
+- **`james-files`**: Lazy file browser with searchable file tree (↑/↓ + Enter), folder/file Git status indicators and tooltips, inline file editor with Auto-Save / `Ctrl+S`, Word Wrap (`Alt+Z`), in-file search, and a character-level inline HEAD Diff view (`Alt+D`) with per-hunk revert.
+- **`james-todos`**: Per-Space and General to-do list with pending counters, filters (`All` / `Pending` / `Done`), and 1-click launch of any task with the configured Default Agent.
+- **`james-runbook`**: Per-Space and General command runbook with automatic script detection from `package.json`, `Makefile`, and `Cargo.toml`, plus custom saved commands runnable in a new tab with 1 click.
+- **`james-notes`**: Persistent Markdown scratchpad with per-Space and General scopes and automatic saving (without dirtying the git repository).
 - **`projects-sidebar`**: Collapsible Spaces tree grouped by machine, showing nested tabs, agent icons/spinners, context menus, and a footer shortcut to **JamesHerdr Settings**.
 - **`source-control`**: VS Code-inspired Source Control panel with multi-line commit composer, ephemeral AI commit message generation (`Generate`), split Commit/Push/Amend actions, `Staged Changes` / `Changes` with line counts and status tooltips, interactive commit `Graph`, and collapsible diff inspector.
 - **`james-settings`**: Dedicated settings dialog to configure:

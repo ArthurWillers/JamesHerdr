@@ -14,6 +14,21 @@ const ITEMS = [
     labelKey: "act.source_control",
     icon: "mods/source-control/icons/source-control.svg",
   },
+  {
+    id: "todos",
+    labelKey: "act.todos",
+    icon: "mods/activity-bar/icons/todos.svg",
+  },
+  {
+    id: "runbook",
+    labelKey: "act.runbook",
+    icon: "mods/activity-bar/icons/runbook.svg",
+  },
+  {
+    id: "notes",
+    labelKey: "act.notes",
+    icon: "mods/activity-bar/icons/notes.svg",
+  },
 ];
 
 function find(node, id) {

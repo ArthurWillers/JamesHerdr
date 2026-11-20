@@ -119,6 +119,27 @@
                       "content": {
                         "mod": "source-control"
                       }
+                    },
+                    {
+                      "id": "todos",
+                      "type": "block",
+                      "content": {
+                        "mod": "james-todos"
+                      }
+                    },
+                    {
+                      "id": "runbook",
+                      "type": "block",
+                      "content": {
+                        "mod": "james-runbook"
+                      }
+                    },
+                    {
+                      "id": "notes",
+                      "type": "block",
+                      "content": {
+                        "mod": "james-notes"
+                      }
                     }
                   ],
                   "active": "files"
