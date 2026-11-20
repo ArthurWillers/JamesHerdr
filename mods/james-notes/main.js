@@ -1,7 +1,7 @@
 // Persistent Markdown Scratchpad / Notes mod with per-Space and General scopes.
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, Editor, EditorState, Popup } from "gpui-base";
-import { spaces, panes, focused, theme, settings, shared, setShared } from "herdr";
+import { spaces, panes, focused, theme, settings, shared, setShared, props } from "herdr";
 import { tr } from "./i18n.js";
 
 const STORE_KEY = "james-notes.data";
@@ -47,7 +47,8 @@ function activeSpaceInfo() {
 
 export default class JamesNotes extends View {
   init(_props, cx) {
-    this.tab = "space"; // "space" | "general"
+    this.fixedGeneral = props()?.scope === "general";
+    this.tab = this.fixedGeneral ? "general" : "space"; // "space" | "general"
     this.loadedBucket = null;
     this.suppressChange = false;
     this.saveSeq = 0;
@@ -189,11 +190,10 @@ export default class JamesNotes extends View {
       .id("james-notes")
       .size_full()
       .min_h(0)
-      .rounded(10)
-      .overflow_hidden()
+      .when(!this.fixedGeneral, (el) =>
+        el.rounded(10).overflow_hidden().border_1().border_color(t.border)
+      )
       .bg(t.background)
-      .border_1()
-      .border_color(t.border)
       .text_color(t.foreground)
       .text_size(13)
       // Header
@@ -204,7 +204,7 @@ export default class JamesNotes extends View {
           .px(14)
           .gap(8)
           .items_center()
-          .rounded_t(9)
+          .when(!this.fixedGeneral, (el) => el.rounded_t(9))
           .border_b(1)
           .border_color(t.border)
           .bg(t.chrome ?? t.background)
@@ -221,16 +221,18 @@ export default class JamesNotes extends View {
           )
       )
       // Scope Tabs
-      .child(
-        h_flex()
-          .px(10)
-          .pt(10)
-          .pb(8)
-          .gap(6)
-          .border_b(1)
-          .border_color(t.border)
-          .child(tabBtn("space", tr("todos.space")))
-          .child(tabBtn("general", tr("todos.general")))
+      .when(!this.fixedGeneral, (el) =>
+        el.child(
+          h_flex()
+            .px(10)
+            .pt(10)
+            .pb(8)
+            .gap(6)
+            .border_b(1)
+            .border_color(t.border)
+            .child(tabBtn("space", tr("todos.space")))
+            .child(tabBtn("general", tr("todos.general")))
+        )
       )
       // Markdown Editor Body
       .child(

@@ -2,7 +2,7 @@
 // + custom saved commands per Space and General, runnable with 1 click.
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, Input, InputState, Popup } from "gpui-base";
-import { spaces, panes, focused, readTextFile, run, theme, shared, setShared, checking } from "herdr";
+import { spaces, panes, focused, readTextFile, knownAgents, exec, openOverlay, run, theme, shared, setShared, checking, props } from "herdr";
 import { tr } from "./i18n.js";
 
 const ICON = {
@@ -10,6 +10,7 @@ const ICON = {
   plus: "mods/james-chrome/plus.svg",
   close: "mods/james-chrome/x.svg",
   refresh: "mods/source-control/icons/refresh.svg",
+  sparkles: "mods/source-control/icons/sparkles.svg",
 };
 
 const STORE_KEY = "james-runbook.custom";
@@ -61,15 +62,71 @@ function activeSpaceInfo() {
 
 export default class JamesRunbook extends View {
   init(_props, cx) {
-    this.tab = "space"; // "space" | "general"
+    this.fixedGeneral = props()?.scope === "general";
+    this.tab = this.fixedGeneral ? "general" : "space"; // "space" | "general"
     this.adding = false;
+    this.newKind = "shell"; // "shell" | "agent"
+    this.newAgentKey = "__default__";
+    this.installedAgents = [];
     this.detected = [];
     this.detectedKey = "";
     this.loadingDetected = false;
     this.nameInput = InputState.new({ placeholder: tr("runbook.name_placeholder") });
     this.cmdInput = InputState.new({ placeholder: tr("runbook.cmd_placeholder") });
     this.cmdInput.on("submit", (_ev, cx) => this.addCommand(cx));
-    if (!checking()) this.detectProjectScripts(cx);
+    if (!checking()) {
+      this.detectProjectScripts(cx);
+      this.loadAgents(cx);
+    }
+  }
+
+  loadAgents(cx) {
+    const { on } = activeSpaceInfo();
+    cx.spawn(async (spawnCx) => {
+      try {
+        const checkScript =
+          'CLEAN_PATH=$(printf "%s" "$PATH" | tr ":" "\\n" | grep -vE "mise/(shims|command-wrappers)" | tr "\\n" ":"); ' +
+          "check_one() { " +
+          '  bin="$1"; mdir="$2"; ' +
+          '  if [ -e "$HOME/.local/share/mise/installs/$mdir/latest" ]; then printf "%s\\n" "$bin"; return; fi; ' +
+          '  p=$(PATH="$CLEAN_PATH:$HOME/.local/bin:/usr/local/bin:/usr/bin" command -v "$bin" 2>/dev/null || true); ' +
+          '  if [ -n "$p" ] && ! { head -c 2 "$p" 2>/dev/null | grep -q "^#!" && grep -q "mise" "$p" 2>/dev/null; }; then ' +
+          '    printf "%s\\n" "$bin"; ' +
+          "  fi; " +
+          "}; " +
+          "check_one agy antigravity-cli; " +
+          "check_one claude claude; " +
+          "check_one codex codex; " +
+          "check_one opencode opencode; " +
+          "check_one gemini gemini-cli; " +
+          "check_one pi pi; " +
+          "check_one cursor-agent cursor-agent; " +
+          "check_one kimi kimi-code; " +
+          "check_one qwen qwen-code;";
+        const opts = on ? { on } : undefined;
+        const [list, realRes] = await Promise.all([
+          knownAgents(opts),
+          exec("sh", ["-c", checkScript], opts).catch(() => ({ code: 1, stdout: "" })),
+        ]);
+        const realBins = new Set(
+          (realRes.code === 0 ? realRes.stdout : "")
+            .split("\n")
+            .map((s) => s.trim())
+            .filter(Boolean)
+        );
+        this.installedAgents = (list ?? []).filter((a) => {
+          if (!a.installed) return false;
+          if (realRes.code === 0) {
+            const bin = a.run?.[0] ?? "";
+            return realBins.has(bin) || realBins.has(a.key);
+          }
+          return true;
+        });
+        spawnCx.notify();
+      } catch {
+        // ignore
+      }
+    });
   }
 
   getData() {
@@ -163,10 +220,18 @@ export default class JamesRunbook extends View {
     const name = (this.nameInput.value() ?? "").trim() || cmd.split(/\s+/)[0];
     const bucket = this.currentBucket();
     const list = [...(this.getData()[bucket] ?? [])];
+    const pickedAgent =
+      this.newKind === "agent" && this.newAgentKey !== "__default__"
+        ? this.installedAgents.find((a) => a.key === this.newAgentKey)
+        : null;
     list.push({
       id: `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
       name,
       cmd,
+      kind: this.newKind,
+      agentKey: this.newKind === "agent" ? this.newAgentKey : null,
+      agentName: pickedAgent?.name ?? null,
+      agentRun: pickedAgent?.run ?? null,
     });
     this.saveList(bucket, list);
     this.nameInput.set_value("");
@@ -182,8 +247,47 @@ export default class JamesRunbook extends View {
     cx.notify();
   }
 
-  runCommand(item) {
+  runWithAgent(item) {
     const { space, folder } = activeSpaceInfo();
+    const def = shared("james.defaultAgent");
+    const argv =
+      item.agentRun ??
+      (item.agentKey && item.agentKey !== "__default__"
+        ? this.installedAgents.find((a) => a.key === item.agentKey)?.run
+        : null) ??
+      def?.run ??
+      this.installedAgents[0]?.run;
+    if (!argv) {
+      openOverlay({
+        mod: "james-settings",
+        kind: "dialog",
+        width: 600,
+        height: 500,
+        props: { section: "default-agent" },
+      });
+      return;
+    }
+    if (this.fixedGeneral) {
+      run("layout.select", { stack: "center-stage", child: "work" });
+    }
+    run("tab.new", {
+      name: item.name.slice(0, 28),
+      space: space?.id,
+      folder: folder || undefined,
+      argv,
+      task: item.cmd,
+    });
+  }
+
+  runCommand(item) {
+    if (item.kind === "agent") {
+      this.runWithAgent(item);
+      return;
+    }
+    const { space, folder } = activeSpaceInfo();
+    if (this.fixedGeneral) {
+      run("layout.select", { stack: "center-stage", child: "work" });
+    }
     run("tab.new", {
       name: item.name,
       space: space?.id,
@@ -242,6 +346,18 @@ export default class JamesRunbook extends View {
                   .truncate()
                   .child(item.name)
               )
+              .when(item.kind === "agent", (el) =>
+                el.child(
+                  div()
+                    .px(5)
+                    .py(1)
+                    .rounded(4)
+                    .bg(t.selected)
+                    .text_size(9.5)
+                    .text_color(t.accent)
+                    .child(item.agentName || tr("routines.mode_agent"))
+                )
+              )
               .when(Boolean(item.source), (el) =>
                 el.child(
                   div()
@@ -263,7 +379,29 @@ export default class JamesRunbook extends View {
               .child(item.cmd)
           )
       )
-      .child(tipAbove(`rb-run-${item.id}`, tr("runbook.run"), playBtn, t, "bottom_right"))
+      .when(item.kind !== "agent", (row) => {
+        const agBtn = h_flex()
+          .id(`rb-ag-${item.id}`)
+          .w(24)
+          .h(24)
+          .rounded(5)
+          .flex_none()
+          .items_center()
+          .justify_center()
+          .cursor_pointer()
+          .border_1()
+          .border_color(t.border)
+          .bg(t.background)
+          .hover((s) => s.bg(t.hover))
+          .on_mouse_down("left", (_ev, cx) => {
+            cx.stop_propagation();
+            tipState.id = null;
+            this.runWithAgent(item);
+          })
+          .child(svg(ICON.sparkles).size(11).text_color(t.accent));
+        return row.child(agBtn);
+      })
+      .child(playBtn)
       .when(isCustom, (row) => {
         const delBtn = h_flex()
           .id(`rb-del-${item.id}`)
@@ -281,9 +419,7 @@ export default class JamesRunbook extends View {
             this.deleteCommand(item.id, cx);
           })
           .child(svg(ICON.close).size(11).text_color(t.dim));
-        return row.child(
-          tipAbove(`rb-rm-${item.id}`, tr("todos.delete"), delBtn, t, "bottom_right")
-        );
+        return row.child(delBtn);
       });
   }
 
@@ -329,9 +465,10 @@ export default class JamesRunbook extends View {
 
     const addToggleBtn = h_flex()
       .id("rb-toggle-add")
-      .w(24)
-      .h(22)
-      .rounded(5)
+      .h(26)
+      .px(this.fixedGeneral ? 10 : 8)
+      .gap(5)
+      .rounded(6)
       .items_center()
       .justify_center()
       .flex_none()
@@ -339,6 +476,9 @@ export default class JamesRunbook extends View {
       .border_1()
       .border_color(this.adding ? t.accent : t.border)
       .bg(this.adding ? t.selected : t.raised)
+      .text_size(11.5)
+      .font_weight(500)
+      .text_color(t.foreground)
       .hover((s) => s.bg(t.hover))
       .on_mouse_down("left", (_ev, cx) => {
         cx.stop_propagation();
@@ -349,13 +489,14 @@ export default class JamesRunbook extends View {
         }
         cx.notify();
       })
-      .child(svg(ICON.plus).size(12).text_color(t.foreground));
+      .child(svg(ICON.plus).size(12).text_color(t.accent))
+      .child(div().child(tr("runbook.add_command")));
 
     const refreshBtn = h_flex()
       .id("rb-refresh")
-      .w(24)
-      .h(22)
-      .rounded(5)
+      .w(26)
+      .h(26)
+      .rounded(6)
       .items_center()
       .justify_center()
       .flex_none()
@@ -375,22 +516,21 @@ export default class JamesRunbook extends View {
       .id("james-runbook")
       .size_full()
       .min_h(0)
-      .rounded(10)
-      .overflow_hidden()
+      .when(!this.fixedGeneral, (el) =>
+        el.rounded(10).overflow_hidden().border_1().border_color(t.border)
+      )
       .bg(t.background)
-      .border_1()
-      .border_color(t.border)
       .text_color(t.foreground)
       .text_size(13)
       // Header
       .child(
         h_flex()
-          .h(42)
+          .h(46)
           .flex_none()
-          .px(12)
-          .gap(6)
+          .px(this.fixedGeneral ? 18 : 12)
+          .gap(8)
           .items_center()
-          .rounded_t(9)
+          .when(!this.fixedGeneral, (el) => el.rounded_t(9))
           .border_b(1)
           .border_color(t.border)
           .bg(t.chrome ?? t.background)
@@ -405,26 +545,22 @@ export default class JamesRunbook extends View {
               .text_color(t.dim)
               .child(this.tab === "general" ? tr("todos.general") : info.label)
           )
-          .when(this.tab === "space", (el) =>
-            el.child(
-              tipAbove("rb-refresh-tip", tr("set.ai_refresh"), refreshBtn, t, "bottom_right")
-            )
-          )
-          .child(
-            tipAbove("rb-add-tip", tr("runbook.add_command"), addToggleBtn, t, "bottom_right")
-          )
+          .when(this.tab === "space", (el) => el.child(refreshBtn))
+          .child(addToggleBtn)
       )
       // Scope Tabs
-      .child(
-        h_flex()
-          .px(10)
-          .pt(10)
-          .pb(8)
-          .gap(6)
-          .border_b(1)
-          .border_color(t.border)
-          .child(tabBtn("space", tr("todos.space")))
-          .child(tabBtn("general", tr("todos.general")))
+      .when(!this.fixedGeneral, (el) =>
+        el.child(
+          h_flex()
+            .px(10)
+            .pt(10)
+            .pb(8)
+            .gap(6)
+            .border_b(1)
+            .border_color(t.border)
+            .child(tabBtn("space", tr("todos.space")))
+            .child(tabBtn("general", tr("todos.general")))
+        )
       )
       // Add Custom Command Form
       .when(this.adding, (el) =>
@@ -458,6 +594,98 @@ export default class JamesRunbook extends View {
                 .bg(t.canvas ?? t.background)
                 .text_size(12)
                 .text_color(t.foreground)
+            )
+            // Type selector (Shell vs Agent) + Agent picker
+            .child(
+              h_flex()
+                .gap(6)
+                .items_center()
+                .flex_wrap()
+                .child(
+                  h_flex()
+                    .id("rb-kind-shell")
+                    .h(24)
+                    .px(9)
+                    .rounded(5)
+                    .items_center()
+                    .cursor_pointer()
+                    .border_1()
+                    .border_color(this.newKind === "shell" ? t.accent : t.border)
+                    .bg(this.newKind === "shell" ? t.selected : t.raised)
+                    .text_size(11)
+                    .text_color(this.newKind === "shell" ? t.foreground : t.muted)
+                    .on_mouse_down("left", (_ev, cx) => {
+                      cx.stop_propagation();
+                      this.newKind = "shell";
+                      cx.notify();
+                    })
+                    .child("Shell")
+                )
+                .child(
+                  h_flex()
+                    .id("rb-kind-agent")
+                    .h(24)
+                    .px(9)
+                    .rounded(5)
+                    .items_center()
+                    .cursor_pointer()
+                    .border_1()
+                    .border_color(this.newKind === "agent" ? t.accent : t.border)
+                    .bg(this.newKind === "agent" ? t.selected : t.raised)
+                    .text_size(11)
+                    .text_color(this.newKind === "agent" ? t.foreground : t.muted)
+                    .on_mouse_down("left", (_ev, cx) => {
+                      cx.stop_propagation();
+                      this.newKind = "agent";
+                      cx.notify();
+                    })
+                    .child(tr("dash.agent_label"))
+                )
+                .when(this.newKind === "agent", (row) =>
+                  row
+                    .child(
+                      h_flex()
+                        .id("rb-ag-pick-default")
+                        .h(24)
+                        .px(8)
+                        .rounded(5)
+                        .items_center()
+                        .cursor_pointer()
+                        .border_1()
+                        .border_color(this.newAgentKey === "__default__" ? t.accent : t.border)
+                        .bg(this.newAgentKey === "__default__" ? t.selected : t.background)
+                        .text_size(10.5)
+                        .text_color(this.newAgentKey === "__default__" ? t.foreground : t.dim)
+                        .on_mouse_down("left", (_ev, cx) => {
+                          cx.stop_propagation();
+                          this.newAgentKey = "__default__";
+                          cx.notify();
+                        })
+                        .child(tr("dash.default_tag"))
+                    )
+                    .children(
+                      this.installedAgents.map((ag) =>
+                        h_flex()
+                          .id(`rb-ag-pick-${ag.key}`)
+                          .h(24)
+                          .px(8)
+                          .rounded(5)
+                          .items_center()
+                          .cursor_pointer()
+                          .border_1()
+                          .border_color(this.newAgentKey === ag.key ? t.accent : t.border)
+                          .bg(this.newAgentKey === ag.key ? t.selected : t.background)
+                          .text_size(10.5)
+                          .text_color(this.newAgentKey === ag.key ? t.foreground : t.dim)
+                          .on_mouse_down("left", (_ev, cx) => {
+                            cx.stop_propagation();
+                            this.newAgentKey = ag.key;
+                            cx.notify();
+                          })
+                          .child(ag.name)
+                      )
+                    )
+                )
             )
             .child(
               h_flex()

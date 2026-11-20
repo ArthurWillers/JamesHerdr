@@ -8,10 +8,16 @@ import {
   agents,
   focused,
   run,
+  exec,
+  notify,
   theme,
   layout,
   setAgentOrder,
   openOverlay,
+  shared,
+  setShared,
+  checking,
+  home,
 } from "herdr";
 
 const ICON = {
@@ -128,11 +134,129 @@ function tipAbove(id, label, triggerEl, t, anchor = "bottom_center") {
     );
 }
 
+function computeNextRoutineRun(routine, fromMs = Date.now()) {
+  if (!routine.enabled) return null;
+  if (routine.scheduleType === "daily") {
+    const m = /^(\d{1,2}):(\d{2})$/.exec((routine.dailyTime || "09:00").trim());
+    const hh = m ? Math.min(23, Math.max(0, Number(m[1]))) : 9;
+    const mm = m ? Math.min(59, Math.max(0, Number(m[2]))) : 0;
+    const d = new Date(fromMs);
+    d.setHours(hh, mm, 0, 0);
+    if (d.getTime() <= fromMs + 1000) d.setDate(d.getDate() + 1);
+    return d.getTime();
+  }
+  const mins = Math.max(1, Number(routine.intervalMinutes) || 30);
+  return fromMs + mins * 60 * 1000;
+}
+
 export default class ProjectsSidebar extends View {
-  init() {
+  init(_props, cx) {
     this.scroll = ScrollHandle.new();
     this.collapsed = new Set();
     this.foldedMachines = new Set();
+    this.runningRoutines = new Set();
+    if (!checking()) {
+      cx.timer.every(15000, (timerCx) => this.tickRoutines(timerCx));
+    }
+  }
+
+  tickRoutines(cx) {
+    const raw = shared("james-routines.data");
+    if (!Array.isArray(raw) || raw.length === 0) return;
+    const now = Date.now();
+    const due = raw.filter(
+      (r) =>
+        r.enabled &&
+        r.engine !== "os" &&
+        r.nextRunAt &&
+        now >= r.nextRunAt &&
+        !this.runningRoutines.has(r.id)
+    );
+    if (due.length === 0) return;
+
+    const allSpaces = spaces();
+    let updated = raw.map((r) => {
+      if (!due.some((d) => d.id === r.id)) return r;
+      return { ...r, nextRunAt: computeNextRoutineRun(r, now) };
+    });
+    setShared("james-routines.data", updated);
+
+    const patchRoutine = (id, patch) => {
+      const cur = shared("james-routines.data");
+      if (!Array.isArray(cur)) return;
+      setShared(
+        "james-routines.data",
+        cur.map((x) => (x.id === id ? { ...x, ...patch } : x))
+      );
+    };
+
+    for (const r of due) {
+      const sp = r.spaceId ? allSpaces.find((s) => s.id === r.spaceId) : null;
+      const folder = sp?.folder || undefined;
+
+      if (r.mode === "terminal") {
+        run("tab.new", {
+          name: r.name,
+          space: sp?.id,
+          folder,
+          argv: ["sh", "-c", `${r.cmd}; echo ""; exec "\${SHELL:-sh}"`],
+        });
+        patchRoutine(r.id, {
+          lastRunAt: now,
+          lastStatus: "ok",
+          runCount: (r.runCount || 0) + 1,
+        });
+      } else if (r.mode === "agent") {
+        const def = shared("james.defaultAgent");
+        const argv = r.agentRun ?? def?.run;
+        if (argv) {
+          run("tab.new", {
+            name: r.name.slice(0, 28),
+            space: sp?.id,
+            folder,
+            argv,
+            task: r.cmd,
+          });
+          patchRoutine(r.id, {
+            lastRunAt: now,
+            lastStatus: "ok",
+            runCount: (r.runCount || 0) + 1,
+          });
+        }
+      } else {
+        this.runningRoutines.add(r.id);
+        cx.spawn(async (spawnCx) => {
+          let status = "ok";
+          let output = "";
+          try {
+            const opts = {};
+            if (folder) opts.cwd = folder;
+            if (r.machine) opts.on = r.machine;
+            const res = await exec("sh", ["-c", r.cmd], Object.keys(opts).length ? opts : undefined);
+            output = [res?.stdout, res?.stderr].filter(Boolean).join("\n").trim().slice(-1200);
+            if (res && typeof res.code === "number" && res.code !== 0) status = "error";
+          } catch (err) {
+            status = "error";
+            output = String(err?.message || err || "Failed").slice(-1200);
+          } finally {
+            this.runningRoutines.delete(r.id);
+            patchRoutine(r.id, {
+              lastRunAt: Date.now(),
+              lastStatus: status,
+              lastOutput: output,
+              runCount: (r.runCount || 0) + 1,
+            });
+            if (status === "error") {
+              notify({
+                title: `${tr("routines.title")}: ${r.name}`,
+                body: output.split("\n")[0] || tr("routines.status_error"),
+              });
+            }
+            spawnCx.notify();
+          }
+        });
+      }
+    }
   }
 
   toggleSpace(id, cx) {
@@ -154,6 +278,21 @@ export default class ProjectsSidebar extends View {
     const ag = agents();
     const foc = focused();
     const rail = narrow();
+    const findNode = (node, id) => {
+      if (node?.id === id) return node;
+      for (const child of node?.children ?? []) {
+        const found = findNode(child, id);
+        if (found) return found;
+      }
+      return null;
+    };
+    const centerActive = findNode(layout(), "center-stage")?.active;
+    const onCenterPage =
+      centerActive === "dashboard-page" ||
+      centerActive === "todos-page" ||
+      centerActive === "runbook-page" ||
+      centerActive === "notes-page" ||
+      centerActive === "routines-page";
 
     const leads = leadPanes(ps);
     const agentsByTab = new Map();
@@ -206,8 +345,127 @@ export default class ProjectsSidebar extends View {
       .justify_center()
       .cursor_pointer()
       .hover((e) => e.bg(t.hover))
-      .on_click(() => run("space.new"))
+      .on_click(() => {
+        run("layout.select", { stack: "center-stage", child: "work" });
+        run("space.new", { folder: home() });
+      })
       .child(svg(ICON.plus).size(14).text_color(t.muted));
+
+    const blockedCount = ag.filter((a) => a.status === "blocked").length;
+    const globalTodoCount = (
+      (shared("james-todos.data") ?? {})["__global__"] ?? []
+    ).filter((x) => !x.done).length;
+    const routinesList = Array.isArray(shared("james-routines.data"))
+      ? shared("james-routines.data")
+      : [];
+    const failedRoutinesCount = routinesList.filter((r) => r.enabled && r.lastStatus === "error").length;
+    const activeRoutinesCount = routinesList.filter((r) => r.enabled).length;
+
+    const dockItem = (pageId, iconPath, label, badgeCount, badgeColor) => {
+      const active = centerActive === pageId;
+      const btn = h_flex()
+        .id(`sidebar-dock-${pageId}`)
+        .w_full()
+        .h(30)
+        .rounded(6)
+        .relative()
+        .items_center()
+        .justify_center()
+        .cursor_pointer()
+        .when(active, (e) => e.bg(t.selected))
+        .hover((e) => e.bg(active ? t.selected : t.hover))
+        .on_mouse_down("left", (_ev, cx) => {
+          cx.stop_propagation();
+          tipState.id = null;
+          run("layout.select", { stack: "center-stage", child: pageId });
+        })
+        .child(
+          svg(iconPath)
+            .size(15)
+            .text_color(active ? t.accent : t.muted)
+        )
+        .when(badgeCount > 0, (e) =>
+          e.child(
+            div()
+              .absolute()
+              .top(2)
+              .right(6)
+              .px(4)
+              .min_w(14)
+              .h(14)
+              .flex()
+              .items_center()
+              .justify_center()
+              .rounded(7)
+              .bg(badgeColor ?? t.accent)
+              .text_size(9.5)
+              .font_weight(700)
+              .text_color(t.accent_foreground ?? "#ffffff")
+              .child(String(badgeCount > 99 ? "99+" : badgeCount))
+          )
+        );
+      return div()
+        .flex_1()
+        .min_w(0)
+        .child(tipAbove(`dock-${pageId}`, label, btn, t, "bottom_center"));
+    };
+
+    const cockpitDock = h_flex()
+      .id("sidebar-cockpit-dock")
+      .w_full()
+      .h(38)
+      .p(3)
+      .gap(4)
+      .items_center()
+      .rounded(9)
+      .border_1()
+      .border_color(t.border)
+      .bg(t.raised)
+      .child(
+        dockItem(
+          "dashboard-page",
+          "mods/activity-bar/icons/dashboard.svg",
+          tr("act.dashboard"),
+          blockedCount,
+          t.blocked
+        )
+      )
+      .child(
+        dockItem(
+          "todos-page",
+          "mods/activity-bar/icons/todos.svg",
+          `${tr("act.todos")} (${tr("todos.general")})`,
+          globalTodoCount,
+          t.accent
+        )
+      )
+      .child(
+        dockItem(
+          "runbook-page",
+          "mods/activity-bar/icons/runbook.svg",
+          `${tr("act.runbook")} (${tr("todos.general")})`,
+          0,
+          null
+        )
+      )
+      .child(
+        dockItem(
+          "notes-page",
+          "mods/activity-bar/icons/notes.svg",
+          `${tr("act.notes")} (${tr("todos.general")})`,
+          0,
+          null
+        )
+      )
+      .child(
+        dockItem(
+          "routines-page",
+          "mods/activity-bar/icons/routines.svg",
+          tr("routines.title"),
+          failedRoutinesCount > 0 ? failedRoutinesCount : activeRoutinesCount,
+          failedRoutinesCount > 0 ? "#f14c4c" : t.accent
+        )
+      );
 
     const header = h_flex()
       .id("projects-header")
@@ -253,6 +511,7 @@ export default class ProjectsSidebar extends View {
           )
           .on_mouse_down("left", (_ev, cx) => {
             cx.stop_propagation();
+            run("layout.select", { stack: "center-stage", child: "work" });
             this.toggleSpace(s.id, cx);
           })
           .child(
@@ -347,7 +606,7 @@ export default class ProjectsSidebar extends View {
                 .rounded(6)
                 .items_center()
                 .cursor_pointer()
-                .when(activeTab, (e) => e.bg(t.surface))
+                .when(activeTab && !onCenterPage, (e) => e.bg(t.surface))
                 .hover((e) => e.bg(t.hover))
                 .on_mouse_down("right", (_ev, e) => {
                   e.stop_propagation();
@@ -359,6 +618,7 @@ export default class ProjectsSidebar extends View {
                   });
                 })
                 .on_click(() => {
+                  run("layout.select", { stack: "center-stage", child: "work" });
                   if (!isCurrentSpace) run("space.select", { id: s.id });
                   run("tab.select", { id: tab.id });
                 })
@@ -467,7 +727,8 @@ export default class ProjectsSidebar extends View {
                   .hover((s) => s.bg(t.surface).text_color(t.foreground))
                   .on_mouse_down("left", (_ev, cx) => {
                     cx.stop_propagation();
-                    run("space.new", { machine: m ?? "" });
+                    run("layout.select", { stack: "center-stage", child: "work" });
+                    run("space.new", m ? { machine: m } : { machine: "", folder: home() });
                   })
                   .child("+")
               )
@@ -492,7 +753,8 @@ export default class ProjectsSidebar extends View {
                 .hover((e) => e.bg(t.hover).text_color(t.foreground))
                 .on_mouse_down("left", (_ev, cx) => {
                   cx.stop_propagation();
-                  run("space.new", { machine: m ?? "" });
+                  run("layout.select", { stack: "center-stage", child: "work" });
+                  run("space.new", m ? { machine: m } : { machine: "", folder: home() });
                 })
                 .child(svg(ICON.plus).size(12))
                 .child(tr("sb.new_space_there"))
@@ -511,6 +773,7 @@ export default class ProjectsSidebar extends View {
       .px(6)
       .py(6)
       .gap(4)
+      .child(cockpitDock)
       .child(header)
       .child(
         v_flex()

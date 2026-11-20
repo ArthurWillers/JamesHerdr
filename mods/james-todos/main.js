@@ -1,7 +1,8 @@
-// To-do list mod with per-Space and General scopes + 1-click launch with Default Agent.
+// Rich To-do list mod with per-Space and General scopes, expandable task notes,
+// priority levels, move between Space/General, and 1-click launch with Default Agent.
 import { View, div, svg } from "gpui-kit";
-import { v_flex, h_flex, Input, InputState, Popup } from "gpui-base";
-import { spaces, panes, focused, run, openOverlay, theme, shared, setShared } from "herdr";
+import { v_flex, h_flex, Input, InputState, Textarea, TextareaState, Popup } from "gpui-base";
+import { spaces, panes, focused, run, openOverlay, theme, shared, setShared, props } from "herdr";
 import { tr } from "./i18n.js";
 
 const ICON = {
@@ -9,10 +10,18 @@ const ICON = {
   plus: "mods/james-chrome/plus.svg",
   close: "mods/james-chrome/x.svg",
   sparkles: "mods/source-control/icons/sparkles.svg",
+  note: "mods/activity-bar/icons/notes.svg",
+  move: "mods/james-chrome/layers.svg",
 };
 
 const STORE_KEY = "james-todos.data";
 const GLOBAL_KEY = "__global__";
+const PRIO_ORDER = ["high", "medium", "low"];
+const PRIO_COLOR = {
+  high: "#f14c4c",
+  medium: "#4daafc",
+  low: "#73c991",
+};
 const tipState = { id: null };
 
 function tipAbove(id, label, triggerEl, t, anchor = "bottom_center") {
@@ -53,9 +62,21 @@ function activeSpaceInfo() {
 }
 
 export default class JamesTodos extends View {
-  init(_props, cx) {
-    this.tab = "space"; // "space" | "general"
+  init() {
+    this.fixedGeneral = props()?.scope === "general";
+    this.tab = this.fixedGeneral ? "general" : "space"; // "space" | "general"
     this.filter = "all"; // "all" | "pending" | "done"
+    this.newPriority = "medium"; // "high" | "medium" | "low"
+    this.expandedId = null;
+    this.noteInput = TextareaState.new({
+      placeholder: tr("todos.note_placeholder"),
+      value: "",
+      rows: 4,
+    });
+    this.noteInput.on("change", (_ev, cx) => {
+      if (!this.expandedId) return;
+      this.updateTodo(this.expandedId, { note: this.noteInput.value() }, cx, false);
+    });
     this.input = InputState.new({ placeholder: tr("todos.placeholder") });
     this.input.on("submit", (_ev, cx) => {
       this.addTodo(cx);
@@ -68,8 +89,7 @@ export default class JamesTodos extends View {
   }
 
   saveList(bucketKey, list) {
-    const all = { ...this.getData(), [bucketKey]: list };
-    setShared(STORE_KEY, all);
+    setShared(STORE_KEY, { ...this.getData(), [bucketKey]: list });
   }
 
   currentBucket() {
@@ -85,11 +105,22 @@ export default class JamesTodos extends View {
     list.unshift({
       id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
       text,
+      note: "",
+      priority: this.newPriority,
       done: false,
     });
     this.saveList(bucket, list);
     this.input.set_value("");
     cx.notify();
+  }
+
+  updateTodo(id, patch, cx, notifyNow = true) {
+    const bucket = this.currentBucket();
+    const list = (this.getData()[bucket] ?? []).map((item) =>
+      item.id === id ? { ...item, ...patch } : item
+    );
+    this.saveList(bucket, list);
+    if (notifyNow) cx.notify();
   }
 
   toggleTodo(id, cx) {
@@ -101,10 +132,47 @@ export default class JamesTodos extends View {
     cx.notify();
   }
 
+  cyclePriority(item, cx) {
+    const cur = item.priority ?? "medium";
+    const next = PRIO_ORDER[(PRIO_ORDER.indexOf(cur) + 1) % PRIO_ORDER.length];
+    this.updateTodo(item.id, { priority: next }, cx);
+  }
+
+  toggleExpandNote(item, cx) {
+    if (this.expandedId === item.id) {
+      this.expandedId = null;
+    } else {
+      this.expandedId = item.id;
+      this.noteInput.set_value(item.note ?? "");
+      cx.timer.after(20, () => {
+        if (this.expandedId === item.id) this.noteInput.focus();
+      });
+    }
+    cx.notify();
+  }
+
+  moveTodoScope(item, cx) {
+    const fromBucket = this.currentBucket();
+    const info = activeSpaceInfo();
+    const toBucket = this.tab === "general" ? info.scopeId : GLOBAL_KEY;
+    if (fromBucket === toBucket) return;
+    const data = this.getData();
+    const fromList = (data[fromBucket] ?? []).filter((x) => x.id !== item.id);
+    const toList = [item, ...(data[toBucket] ?? [])];
+    setShared(STORE_KEY, {
+      ...data,
+      [fromBucket]: fromList,
+      [toBucket]: toList,
+    });
+    if (this.expandedId === item.id) this.expandedId = null;
+    cx.notify();
+  }
+
   deleteTodo(id, cx) {
     const bucket = this.currentBucket();
     const list = (this.getData()[bucket] ?? []).filter((item) => item.id !== id);
     this.saveList(bucket, list);
+    if (this.expandedId === id) this.expandedId = null;
     cx.notify();
   }
 
@@ -118,12 +186,15 @@ export default class JamesTodos extends View {
   sendToAgent(todo) {
     const def = shared("james.defaultAgent");
     const { space } = activeSpaceInfo();
+    const prompt = todo.note?.trim()
+      ? `${todo.text}\n\n${todo.note.trim()}`
+      : todo.text;
     if (def?.run) {
       run("tab.new", {
         name: todo.text.slice(0, 28),
         space: space?.id,
         argv: def.run,
-        task: todo.text,
+        task: prompt,
       });
     } else {
       openOverlay({
@@ -173,6 +244,7 @@ export default class JamesTodos extends View {
         .on_mouse_down("left", (_ev, cx) => {
           cx.stop_propagation();
           this.tab = id;
+          this.expandedId = null;
           cx.notify();
         })
         .child(div().truncate().child(label))
@@ -214,11 +286,10 @@ export default class JamesTodos extends View {
       .id("james-todos")
       .size_full()
       .min_h(0)
-      .rounded(10)
-      .overflow_hidden()
+      .when(!this.fixedGeneral, (el) =>
+        el.rounded(10).overflow_hidden().border_1().border_color(t.border)
+      )
       .bg(t.background)
-      .border_1()
-      .border_color(t.border)
       .text_color(t.foreground)
       .text_size(13)
       // Header
@@ -229,7 +300,7 @@ export default class JamesTodos extends View {
           .px(14)
           .gap(8)
           .items_center()
-          .rounded_t(9)
+          .when(!this.fixedGeneral, (el) => el.rounded_t(9))
           .border_b(1)
           .border_color(t.border)
           .bg(t.chrome ?? t.background)
@@ -245,20 +316,23 @@ export default class JamesTodos extends View {
               .child(this.tab === "general" ? tr("todos.general") : info.label)
           )
       )
-      // Scope Tabs (Space / General)
-      .child(
-        h_flex()
-          .px(10)
-          .pt(10)
-          .pb(6)
-          .gap(6)
-          .child(tabBtn("space", tr("todos.space"), spacePending))
-          .child(tabBtn("general", tr("todos.general"), generalPending))
+      // Scope Tabs
+      .when(!this.fixedGeneral, (el) =>
+        el.child(
+          h_flex()
+            .px(10)
+            .pt(10)
+            .pb(6)
+            .gap(6)
+            .child(tabBtn("space", tr("todos.space"), spacePending))
+            .child(tabBtn("general", tr("todos.general"), generalPending))
+        )
       )
       // Quick Add Input
       .child(
         h_flex()
           .px(10)
+          .when(this.fixedGeneral, (el) => el.pt(10))
           .pb(8)
           .gap(6)
           .items_center()
@@ -273,6 +347,34 @@ export default class JamesTodos extends View {
               .bg(t.canvas ?? t.raised)
               .text_size(12)
               .text_color(t.foreground)
+          )
+          .child(
+            h_flex()
+              .id("todos-new-prio")
+              .h(30)
+              .px(8)
+              .gap(5)
+              .rounded(7)
+              .flex_none()
+              .items_center()
+              .cursor_pointer()
+              .border_1()
+              .border_color(t.border)
+              .bg(t.raised)
+              .hover((s) => s.bg(t.hover))
+              .on_mouse_down("left", (_ev, cx) => {
+                cx.stop_propagation();
+                this.newPriority =
+                  PRIO_ORDER[(PRIO_ORDER.indexOf(this.newPriority) + 1) % PRIO_ORDER.length];
+                cx.notify();
+              })
+              .child(div().size(7).rounded(4).bg(PRIO_COLOR[this.newPriority] ?? PRIO_COLOR.medium))
+              .child(
+                div()
+                  .text_size(11)
+                  .text_color(t.foreground)
+                  .child(tr(`todos.prio_${this.newPriority}`))
+              )
           )
           .child(
             h_flex()
@@ -335,7 +437,7 @@ export default class JamesTodos extends View {
           .min_h(0)
           .overflow_y_scrollbar()
           .p(8)
-          .gap(4)
+          .gap(5)
           .when(shown.length === 0, (el) =>
             el.child(
               div()
@@ -347,6 +449,70 @@ export default class JamesTodos extends View {
           )
           .children(
             shown.map((item) => {
+              const prio = item.priority ?? "medium";
+              const prioColor = PRIO_COLOR[prio] ?? PRIO_COLOR.medium;
+              const isExpanded = this.expandedId === item.id;
+              const hasNote = Boolean(item.note?.trim());
+
+              const prioDot = h_flex()
+                .id(`todo-prio-${item.id}`)
+                .px(6)
+                .py(2)
+                .gap(4)
+                .rounded(5)
+                .flex_none()
+                .items_center()
+                .cursor_pointer()
+                .bg(t.canvas ?? t.background)
+                .border_1()
+                .border_color(t.border)
+                .hover((s) => s.bg(t.hover))
+                .on_mouse_down("left", (_ev, cx) => {
+                  cx.stop_propagation();
+                  this.cyclePriority(item, cx);
+                })
+                .child(div().size(6).rounded(3).bg(prioColor))
+                .child(div().text_size(10).text_color(t.muted).child(tr(`todos.prio_${prio}`)));
+
+              const noteBtn = h_flex()
+                .id(`todo-note-btn-${item.id}`)
+                .w(22)
+                .h(22)
+                .rounded(5)
+                .flex_none()
+                .items_center()
+                .justify_center()
+                .cursor_pointer()
+                .when(isExpanded || hasNote, (b) => b.bg(t.selected))
+                .hover((s) => s.bg(t.surface))
+                .on_mouse_down("left", (_ev, cx) => {
+                  cx.stop_propagation();
+                  tipState.id = null;
+                  this.toggleExpandNote(item, cx);
+                })
+                .child(
+                  svg(ICON.note)
+                    .size(12)
+                    .text_color(isExpanded || hasNote ? t.accent : t.muted)
+                );
+
+              const moveBtn = h_flex()
+                .id(`todo-move-${item.id}`)
+                .w(22)
+                .h(22)
+                .rounded(5)
+                .flex_none()
+                .items_center()
+                .justify_center()
+                .cursor_pointer()
+                .hover((s) => s.bg(t.surface))
+                .on_mouse_down("left", (_ev, cx) => {
+                  cx.stop_propagation();
+                  tipState.id = null;
+                  this.moveTodoScope(item, cx);
+                })
+                .child(svg(ICON.move).size(11).text_color(t.muted));
+
               const agentBtn = h_flex()
                 .id(`todo-agent-${item.id}`)
                 .w(22)
@@ -381,75 +547,138 @@ export default class JamesTodos extends View {
                 })
                 .child(svg(ICON.close).size(11).text_color(t.dim));
 
-              return h_flex()
-                .id(`todo-row-${item.id}`)
+              return v_flex()
+                .id(`todo-card-${item.id}`)
                 .w_full()
-                .min_h(32)
-                .px(8)
-                .py(5)
-                .gap(8)
                 .rounded(7)
-                .items_center()
                 .bg(t.raised)
                 .border_1()
-                .border_color(t.border)
-                .hover((s) => s.bg(t.hover))
+                .border_color(isExpanded ? t.accent : t.border)
                 .child(
                   h_flex()
-                    .id(`todo-chk-${item.id}`)
-                    .w(16)
-                    .h(16)
-                    .rounded(4)
-                    .flex_none()
+                    .w_full()
+                    .min_h(32)
+                    .px(8)
+                    .py(5)
+                    .gap(6)
                     .items_center()
-                    .justify_center()
-                    .cursor_pointer()
-                    .border_1()
-                    .border_color(item.done ? t.accent : t.muted)
-                    .bg(item.done ? t.accent : t.canvas ?? t.background)
-                    .on_mouse_down("left", (_ev, cx) => {
-                      cx.stop_propagation();
-                      this.toggleTodo(item.id, cx);
-                    })
-                    .when(item.done, (c) =>
-                      c.child(
-                        svg(ICON.check)
-                          .size(11)
-                          .text_color(t.accent_foreground ?? t.background)
+                    .hover((s) => s.bg(t.hover))
+                    .child(
+                      h_flex()
+                        .id(`todo-chk-${item.id}`)
+                        .w(16)
+                        .h(16)
+                        .rounded(4)
+                        .flex_none()
+                        .items_center()
+                        .justify_center()
+                        .cursor_pointer()
+                        .border_1()
+                        .border_color(item.done ? t.accent : t.muted)
+                        .bg(item.done ? t.accent : t.canvas ?? t.background)
+                        .on_mouse_down("left", (_ev, cx) => {
+                          cx.stop_propagation();
+                          this.toggleTodo(item.id, cx);
+                        })
+                        .when(item.done, (c) =>
+                          c.child(
+                            svg(ICON.check)
+                              .size(11)
+                              .text_color(t.accent_foreground ?? t.background)
+                          )
+                        )
+                    )
+                    .child(
+                      tipAbove(
+                        `todo-prio-tip-${item.id}`,
+                        tr(`todos.prio_${prio}`),
+                        prioDot,
+                        t,
+                        "bottom_left"
+                      )
+                    )
+                    .child(
+                      v_flex()
+                        .flex_1()
+                        .min_w(0)
+                        .gap(1)
+                        .cursor_pointer()
+                        .on_mouse_down("left", (_ev, cx) => {
+                          cx.stop_propagation();
+                          this.toggleExpandNote(item, cx);
+                        })
+                        .child(
+                          div()
+                            .text_size(12.2)
+                            .text_color(item.done ? t.dim : t.foreground)
+                            .child(item.text)
+                        )
+                        .when(hasNote && !isExpanded, (el) =>
+                          el.child(
+                            div()
+                              .text_size(10.5)
+                              .text_color(t.dim)
+                              .truncate()
+                              .child(item.note.trim().split("\n")[0])
+                          )
+                        )
+                    )
+                    .child(
+                      tipAbove(
+                        `todo-note-tip-${item.id}`,
+                        tr("todos.note_tip"),
+                        noteBtn,
+                        t,
+                        "bottom_right"
+                      )
+                    )
+                    .child(
+                      tipAbove(
+                        `todo-move-tip-${item.id}`,
+                        this.tab === "general"
+                          ? tr("todos.move_space")
+                          : tr("todos.move_general"),
+                        moveBtn,
+                        t,
+                        "bottom_right"
+                      )
+                    )
+                    .when(!item.done, (row) =>
+                      row.child(
+                        tipAbove(
+                          `todo-ag-${item.id}`,
+                          tr("todos.run_agent"),
+                          agentBtn,
+                          t,
+                          "bottom_right"
+                        )
+                      )
+                    )
+                    .child(
+                      tipAbove(
+                        `todo-rm-${item.id}`,
+                        tr("todos.delete"),
+                        delBtn,
+                        t,
+                        "bottom_right"
                       )
                     )
                 )
-                .child(
-                  div()
-                    .flex_1()
-                    .min_w(0)
-                    .text_size(12.2)
-                    .text_color(item.done ? t.dim : t.foreground)
-                    .cursor_pointer()
-                    .on_mouse_down("left", (_ev, cx) => {
-                      cx.stop_propagation();
-                      this.toggleTodo(item.id, cx);
-                    })
-                    .child(item.text)
-                )
-                .when(!item.done, (row) =>
-                  row.child(
-                    tipAbove(
-                      `todo-ag-${item.id}`,
-                      tr("todos.run_agent"),
-                      agentBtn,
-                      t,
-                      "bottom_right"
-                    )
-                  )
-                )
-                .child(
-                  tipAbove(
-                    `todo-rm-${item.id}`,
-                    tr("todos.delete"),
-                    delBtn,
-                    t,
-                    "bottom_right"
+                .when(isExpanded, (card) =>
+                  card.child(
+                    div()
+                      .p(8)
+                      .border_t(1)
+                      .border_color(t.border)
+                      .bg(t.canvas ?? t.background)
+                      .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+                      .child(
+                        Textarea.new(this.noteInput)
+                          .w_full()
+                          .h(72)
+                          .text_size(11.5)
+                          .text_color(t.foreground)
+                      )
                   )
                 );
             })
