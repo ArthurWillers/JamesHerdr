@@ -31,6 +31,27 @@ export default class Tabs extends View {
   init(_props, cx) {
     this.pressed = null;
     this.scroll = ScrollHandle.new();
+    cx.spawn(async () => {
+      try {
+        const r = await exec("sh", [
+          "-c",
+          'SLUG=""; ' +
+            'if command -v omarchy >/dev/null 2>&1; then SLUG="$(omarchy theme current 2>/dev/null | tr "[:upper:]" "[:lower:]" | tr " " "-")"; fi; ' +
+            'if [ -z "$SLUG" ]; then LINK="$HOME/.config/omarchy/current/theme"; if [ -L "$LINK" ] || [ -d "$LINK" ]; then SLUG="$(basename "$(readlink -f "$LINK")")"; fi; fi; ' +
+            '[ -n "$SLUG" ] || exit 0; ' +
+            'if [ ! -e "$HOME/.config/herdr-app/themes/$SLUG.json" ]; then ' +
+            '  for s in "$HOME/Code/JamesHerdr/scripts/omarchy-theme-sync.sh" "$HOME/.config/herdr-app/scripts/omarchy-theme-sync.sh"; do ' +
+            '    if [ -x "$s" ]; then "$s" "$SLUG" >/dev/null 2>&1 || true; break; fi; ' +
+            '  done; ' +
+            'fi; ' +
+            'if [ -e "$HOME/.config/herdr-app/themes/$SLUG.json" ]; then printf "%s" "$SLUG"; fi',
+        ]);
+        const slug = (r.stdout ?? "").trim();
+        if (slug) run("app.theme", { name: slug });
+      } catch {
+        // ignore if not on Omarchy
+      }
+    });
     if (!shared("james.omarchyInitialized")) {
       cx.spawn(async () => {
         try {

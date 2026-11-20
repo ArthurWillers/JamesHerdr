@@ -17,6 +17,7 @@ import {
   knownAgents,
   exec,
   checking,
+  run,
 } from "herdr";
 
 const ICON = {
@@ -116,6 +117,14 @@ export default class JamesSettings extends View {
     this.loadingModels = false;
     this.modelMenuOpen = false;
     this.modelScroll = ScrollHandle.new();
+    this.omarchyInfo = {
+      checked: false,
+      supported: Boolean(shared("james-settings.omarchySupported")),
+      hookInstalled: false,
+      currentTheme: "",
+      busy: false,
+      statusMsg: "",
+    };
 
     this.promptInput = TextareaState.new({
       placeholder: "Commit message generation instructions...",
@@ -130,6 +139,133 @@ export default class JamesSettings extends View {
     if (checking()) return;
     this.discoverAgents(cx);
     if (this.provider) this.discoverModels(this.provider, cx);
+    this.checkOmarchyStatus(cx);
+  }
+
+  checkOmarchyStatus(cx) {
+    cx.spawn(async (cx) => {
+      try {
+        const script =
+          'SUPPORTED=0; ' +
+          'if [ -d "$HOME/.config/omarchy/hooks/theme-set.d" ] && { command -v omarchy >/dev/null 2>&1 || [ -d "$HOME/.config/omarchy/themes" ] || [ -d "/usr/share/omarchy/themes" ]; }; then SUPPORTED=1; fi; ' +
+          'HOOK=0; ' +
+          'if [ -x "$HOME/.config/omarchy/hooks/theme-set.d/herdr-theme-sync" ]; then HOOK=1; fi; ' +
+          'SLUG=""; ' +
+          'if command -v omarchy >/dev/null 2>&1; then SLUG="$(omarchy theme current 2>/dev/null | tr "[:upper:]" "[:lower:]" | tr " " "-")"; fi; ' +
+          'if [ -z "$SLUG" ]; then LINK="$HOME/.config/omarchy/current/theme"; if [ -L "$LINK" ] || [ -d "$LINK" ]; then SLUG="$(basename "$(readlink -f "$LINK")")"; fi; fi; ' +
+          'printf "%s|%s|%s" "$SUPPORTED" "$HOOK" "$SLUG"';
+        const r = await exec("sh", ["-c", script]);
+        const [sup, hook, slug] = (r.stdout ?? "").trim().split("|");
+        const supported = sup === "1";
+        setShared("james-settings.omarchySupported", supported);
+        if (!supported && this.section === "omarchy-theme") {
+          this.section = "default-agent";
+        }
+        this.omarchyInfo = {
+          ...this.omarchyInfo,
+          checked: true,
+          supported,
+          hookInstalled: hook === "1",
+          currentTheme: slug ?? "",
+          busy: false,
+        };
+      } catch {
+        this.omarchyInfo = { ...this.omarchyInfo, checked: true, busy: false };
+      }
+      cx.notify();
+    });
+  }
+
+  toggleOmarchyHook(cx) {
+    if (this.omarchyInfo.busy) return;
+    const install = !this.omarchyInfo.hookInstalled;
+    this.omarchyInfo = { ...this.omarchyInfo, busy: true, statusMsg: "" };
+    cx.notify();
+    cx.spawn(async (cx) => {
+      try {
+        const cmd = install
+          ? 'SCRIPT=""; ' +
+            'for s in "$HOME/Code/JamesHerdr/scripts/omarchy-theme-sync.sh" "$HOME/.config/herdr-app/scripts/omarchy-theme-sync.sh"; do ' +
+            '  if [ -f "$s" ]; then SCRIPT="$s"; break; fi; ' +
+            'done; ' +
+            'if [ -z "$SCRIPT" ]; then echo "omarchy-theme-sync.sh not found" >&2; exit 1; fi; ' +
+            'mkdir -p "$HOME/.config/omarchy/hooks/theme-set.d" && ' +
+            'chmod +x "$SCRIPT" && ' +
+            'ln -sfn "$SCRIPT" "$HOME/.config/omarchy/hooks/theme-set.d/herdr-theme-sync" && ' +
+            '"$SCRIPT"'
+          : 'rm -f "$HOME/.config/omarchy/hooks/theme-set.d/herdr-theme-sync"';
+        const r = await exec("sh", ["-c", cmd]);
+        if (r.code === 0) {
+          if (install && this.omarchyInfo.currentTheme) {
+            run("app.theme", { name: this.omarchyInfo.currentTheme });
+          }
+          this.omarchyInfo = {
+            ...this.omarchyInfo,
+            hookInstalled: install,
+            busy: false,
+            statusMsg: install
+              ? "Hook installed and synced with current Omarchy theme."
+              : "Hook removed.",
+          };
+        } else {
+          this.omarchyInfo = {
+            ...this.omarchyInfo,
+            busy: false,
+            statusMsg: (r.stderr || "Failed to update hook.").trim(),
+          };
+        }
+      } catch (e) {
+        this.omarchyInfo = {
+          ...this.omarchyInfo,
+          busy: false,
+          statusMsg: String(e),
+        };
+      }
+      cx.notify();
+    });
+  }
+
+  syncOmarchyThemeNow(cx) {
+    if (this.omarchyInfo.busy) return;
+    this.omarchyInfo = { ...this.omarchyInfo, busy: true, statusMsg: "" };
+    cx.notify();
+    cx.spawn(async (cx) => {
+      try {
+        const cmd =
+          'SCRIPT=""; ' +
+          'for s in "$HOME/Code/JamesHerdr/scripts/omarchy-theme-sync.sh" "$HOME/.config/herdr-app/scripts/omarchy-theme-sync.sh"; do ' +
+          '  if [ -f "$s" ]; then SCRIPT="$s"; break; fi; ' +
+          'done; ' +
+          'if [ -z "$SCRIPT" ]; then echo "omarchy-theme-sync.sh not found" >&2; exit 1; fi; ' +
+          'chmod +x "$SCRIPT" && "$SCRIPT" && ' +
+          'if command -v omarchy >/dev/null 2>&1; then omarchy theme current 2>/dev/null | tr "[:upper:]" "[:lower:]" | tr " " "-"; ' +
+          'else LINK="$HOME/.config/omarchy/current/theme"; if [ -L "$LINK" ] || [ -d "$LINK" ]; then basename "$(readlink -f "$LINK")"; fi; fi';
+        const r = await exec("sh", ["-c", cmd]);
+        const slug = (r.stdout ?? "").trim().split("\n").pop()?.trim() ?? "";
+        if (r.code === 0) {
+          if (slug) run("app.theme", { name: slug });
+          this.omarchyInfo = {
+            ...this.omarchyInfo,
+            currentTheme: slug || this.omarchyInfo.currentTheme,
+            busy: false,
+            statusMsg: slug ? `Synced theme: ${slug}` : "Theme synced.",
+          };
+        } else {
+          this.omarchyInfo = {
+            ...this.omarchyInfo,
+            busy: false,
+            statusMsg: (r.stderr || "Sync failed.").trim(),
+          };
+        }
+      } catch (e) {
+        this.omarchyInfo = {
+          ...this.omarchyInfo,
+          busy: false,
+          statusMsg: String(e),
+        };
+      }
+      cx.notify();
+    });
   }
 
   save() {
@@ -521,6 +657,9 @@ export default class JamesSettings extends View {
               )
               .child(navItem("default-agent", ICON.sparkles, "Default Agent"))
               .child(navItem("ai-commit", ICON.sliders, "AI Commit"))
+              .when(this.omarchyInfo.supported, (sb) =>
+                sb.child(navItem("omarchy-theme", ICON.refresh, "Omarchy Theme"))
+              )
           )
           .when(this.section === "default-agent", (panel) =>
             panel.child(
@@ -827,6 +966,171 @@ export default class JamesSettings extends View {
               )
             )
           )
+          .when(this.section === "omarchy-theme", (panel) => {
+            const info = this.omarchyInfo;
+            return panel.child(
+              v_flex()
+                .flex_1()
+                .w_full()
+                .min_w(0)
+                .h_full()
+                .min_h(0)
+                .justify_start()
+                .p(16)
+                .gap(16)
+                .overflow_y_scroll()
+                .child(
+                  v_flex()
+                    .w_full()
+                    .min_w(0)
+                    .gap(4)
+                    .child(
+                      div()
+                        .w_full()
+                        .text_size(12.5)
+                        .font_weight(600)
+                        .text_color(t.foreground)
+                        .child("Omarchy Theme Sync")
+                    )
+                    .child(
+                      div()
+                        .w_full()
+                        .text_size(11.5)
+                        .text_color(t.muted)
+                        .child(
+                          "Automatically sync Herdr with Omarchy theme changes. Custom Omarchy themes with colors.toml are generated on the fly into ~/.config/herdr-app/themes/."
+                        )
+                    )
+                )
+                .child(
+                  v_flex()
+                    .w_full()
+                    .min_w(0)
+                    .p(12)
+                    .gap(10)
+                    .rounded(8)
+                    .border_1()
+                    .border_color(t.border)
+                    .bg(t.raised)
+                    .child(
+                      h_flex()
+                        .w_full()
+                        .min_w(0)
+                        .gap(8)
+                        .justify_between()
+                        .items_center()
+                        .child(
+                          v_flex()
+                            .flex_1()
+                            .min_w(0)
+                            .gap(2)
+                            .child(
+                              div()
+                                .text_size(12)
+                                .font_weight(600)
+                                .text_color(t.foreground)
+                                .child("Omarchy theme-set Hook")
+                            )
+                            .child(
+                              div()
+                                .text_size(11)
+                                .text_color(t.muted)
+                                .child(
+                                  info.supported
+                                    ? info.currentTheme
+                                      ? `Detected Omarchy (current theme: ${info.currentTheme})`
+                                      : "Detected Omarchy"
+                                    : info.checked
+                                      ? "Omarchy not detected on this system"
+                                      : "Checking system..."
+                                )
+                            )
+                        )
+                        .child(
+                          div()
+                            .px(8)
+                            .py(3)
+                            .rounded(5)
+                            .border_1()
+                            .border_color(info.hookInstalled ? t.accent : t.border)
+                            .bg(info.hookInstalled ? t.selected : t.canvas ?? t.raised)
+                            .text_size(11)
+                            .font_weight(600)
+                            .text_color(info.hookInstalled ? t.foreground : t.muted)
+                            .child(info.hookInstalled ? "Installed" : "Not Installed")
+                        )
+                    )
+                    .child(
+                      h_flex()
+                        .gap(8)
+                        .items_center()
+                        .when(info.supported, (row) =>
+                          row
+                            .child(
+                              h_flex()
+                                .id("omarchy-hook-toggle")
+                                .px(12)
+                                .py(6)
+                                .gap(6)
+                                .rounded(6)
+                                .items_center()
+                                .cursor_pointer()
+                                .border_1()
+                                .border_color(info.hookInstalled ? t.border : t.accent)
+                                .bg(info.hookInstalled ? t.canvas ?? t.raised : t.selected)
+                                .text_size(11.5)
+                                .font_weight(600)
+                                .text_color(t.foreground)
+                                .hover((s) => s.bg(t.hover))
+                                .on_mouse_down("left", (_ev, cx) => {
+                                  cx.stop_propagation();
+                                  this.toggleOmarchyHook(cx);
+                                })
+                                .child(
+                                  div().child(
+                                    info.busy
+                                      ? "Working..."
+                                      : info.hookInstalled
+                                        ? "Uninstall Hook"
+                                        : "Install Hook"
+                                  )
+                                )
+                            )
+                            .child(
+                              h_flex()
+                                .id("omarchy-sync-now")
+                                .px(12)
+                                .py(6)
+                                .gap(6)
+                                .rounded(6)
+                                .items_center()
+                                .cursor_pointer()
+                                .border_1()
+                                .border_color(t.border)
+                                .bg(t.canvas ?? t.raised)
+                                .text_size(11.5)
+                                .text_color(t.muted)
+                                .hover((s) => s.bg(t.hover).text_color(t.foreground))
+                                .on_mouse_down("left", (_ev, cx) => {
+                                  cx.stop_propagation();
+                                  this.syncOmarchyThemeNow(cx);
+                                })
+                                .child(svg(ICON.refresh).size(12).text_color(t.muted))
+                                .child(div().child("Sync Now"))
+                            )
+                        )
+                    )
+                    .when(Boolean(info.statusMsg), (box) =>
+                      box.child(
+                        div()
+                          .text_size(11)
+                          .text_color(t.muted)
+                          .child(info.statusMsg)
+                      )
+                    )
+                )
+            );
+          })
       );
   }
 }

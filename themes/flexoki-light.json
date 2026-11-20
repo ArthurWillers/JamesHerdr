@@ -1,0 +1,28 @@
+{
+  "background": "#FFFCF0",
+  "foreground": "#100F0F",
+  "selection": "#CECDC3",
+  "cursor": "#403E3C",
+  "ansi": [
+    "#e5e2d8",
+    "#D14D41",
+    "#879A39",
+    "#D0A215",
+    "#205EA6",
+    "#CE5D97",
+    "#3AA99F",
+    "#403E3C",
+    "#878580",
+    "#D14D41",
+    "#879A39",
+    "#D0A215",
+    "#4385BE",
+    "#CE5D97",
+    "#3AA99F",
+    "#100F0F"
+  ],
+  "colors": {
+    "chrome": "#FFFCF0",
+    "canvas": "#f2efe4"
+  }
+}
