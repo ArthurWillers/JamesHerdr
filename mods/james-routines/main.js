@@ -544,7 +544,13 @@ export default class JamesRoutines extends View {
         name: r.name,
         space: sp?.id,
         folder,
-        argv: ["sh", "-c", `${r.cmd}; echo ""; exec "\${SHELL:-sh}"`],
+        argv: [
+          "sh",
+          "-c",
+          'S="${SHELL:-bash}"; exec "$S" -ic \'eval "$1"; echo ""; exec "${SHELL:-bash}"\' _ "$1"',
+          "_",
+          r.cmd,
+        ],
       });
       this.patchRoutine(r.id, {
         lastRunAt: now,

@@ -292,7 +292,13 @@ export default class JamesRunbook extends View {
       name: item.name,
       space: space?.id,
       folder: folder || undefined,
-      argv: ["sh", "-c", `${item.cmd}; echo ""; exec "\${SHELL:-sh}"`],
+      argv: [
+        "sh",
+        "-c",
+        'S="${SHELL:-bash}"; exec "$S" -ic \'eval "$1"; echo ""; exec "${SHELL:-bash}"\' _ "$1"',
+        "_",
+        item.cmd,
+      ],
     });
   }
 
