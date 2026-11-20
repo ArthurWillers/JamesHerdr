@@ -8,7 +8,6 @@ import {
   ScrollHandle,
   v_virtual_list,
   Popup,
-  HoverCard,
 } from "gpui-base";
 import {
   spaces,
@@ -72,24 +71,32 @@ const COMMIT_MODES = [
   { id: "amend", label: "Commit (Amend)" },
 ];
 
+const tipState = { id: null };
+
 function tipAbove(id, label, triggerEl, t, anchor = "bottom_center") {
-  return HoverCard.new(`tip-${id}`)
+  const trigger = triggerEl.on_hover((hovered, cx) => {
+    const next = hovered ? id : tipState.id === id ? null : tipState.id;
+    if (next !== tipState.id) {
+      tipState.id = next;
+      cx.notify();
+    }
+  });
+  return Popup.new(`tip-${id}`, trigger)
     .anchor(anchor)
-    .open_delay(300)
-    .close_delay(0)
-    .trigger(triggerEl)
-    .content(
-      div()
-        .px(8)
-        .py(4)
-        .mb(4)
-        .rounded(6)
-        .border_1()
-        .border_color(t.border)
-        .bg(t.popover ?? t.surface)
-        .text_size(11.5)
-        .text_color(t.foreground)
-        .child(label)
+    .when(tipState.id === id, (el) =>
+      el.content(
+        div()
+          .px(8)
+          .py(4)
+          .mb(4)
+          .rounded(6)
+          .border_1()
+          .border_color(t.border)
+          .bg(t.popover ?? t.surface)
+          .text_size(11.5)
+          .text_color(t.foreground)
+          .child(label)
+      )
     );
 }
 
