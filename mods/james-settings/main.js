@@ -20,6 +20,7 @@ import {
   exec,
   checking,
   run,
+  spaces,
 } from "herdr";
 import { tr, SUPPORTED_LANGS, currentLang } from "./i18n.js";
 
@@ -89,6 +90,9 @@ function normKey(key) {
   return k || "agy";
 }
 
+const DEFAULT_IGNORE =
+  "package-lock.json, pnpm-lock.yaml, yarn.lock, Cargo.lock, bun.lockb, *.min.js, *.map";
+
 const FALLBACK_AGENTS = [
   { key: "antigravity", name: "Antigravity", icon: "icons/antigravity.svg", tint: false },
   { key: "codex", name: "Codex", icon: "icons/codex.svg", tint: false },
@@ -109,6 +113,12 @@ export default class JamesSettings extends View {
     this.prompt = rawSavedPrompt.includes("Rules:\n- Output ONLY the raw commit message text")
       ? DEFAULT_PROMPT
       : rawSavedPrompt;
+    this.globalIgnore = saved.ignore !== undefined ? saved.ignore : DEFAULT_IGNORE;
+    this.spaceConfigs =
+      saved.spaces && typeof saved.spaces === "object" && !Array.isArray(saved.spaces)
+        ? { ...saved.spaces }
+        : {};
+    this.promptScope = props()?.spaceKey || "__global__";
     this.defaultAgent = shared("james.defaultAgent") ?? null;
     this.allInstalledAgents = shared("james-settings.allAgents") ?? [];
 
@@ -175,13 +185,49 @@ export default class JamesSettings extends View {
       statusMsg: "",
     };
 
+    const activePromptVal =
+      this.promptScope === "__global__"
+        ? this.prompt
+        : this.spaceConfigs[this.promptScope]?.prompt ?? "";
+    const activeIgnoreVal =
+      this.promptScope === "__global__"
+        ? this.globalIgnore
+        : this.spaceConfigs[this.promptScope]?.ignore ?? "";
+
     this.promptInput = TextareaState.new({
-      placeholder: tr("set.ai_prompt_placeholder"),
-      value: this.prompt,
-      rows: 7,
+      placeholder:
+        this.promptScope === "__global__"
+          ? tr("set.ai_prompt_placeholder")
+          : tr("set.ai_space_prompt_placeholder"),
+      value: activePromptVal,
+      rows: 6,
     });
     this.promptInput.on("change", () => {
-      this.prompt = this.promptInput.value();
+      const val = this.promptInput.value();
+      if (this.promptScope === "__global__") {
+        this.prompt = val;
+      } else {
+        const cur = this.spaceConfigs[this.promptScope] ?? {};
+        this.spaceConfigs[this.promptScope] = { ...cur, prompt: val };
+      }
+      this.save();
+    });
+
+    this.ignoreInput = InputState.new({
+      placeholder:
+        this.promptScope === "__global__"
+          ? "package-lock.json, pnpm-lock.yaml, *.lock"
+          : "*.lock, dist/**, generated/**",
+      value: activeIgnoreVal,
+    });
+    this.ignoreInput.on("change", () => {
+      const val = this.ignoreInput.value();
+      if (this.promptScope === "__global__") {
+        this.globalIgnore = val;
+      } else {
+        const cur = this.spaceConfigs[this.promptScope] ?? {};
+        this.spaceConfigs[this.promptScope] = { ...cur, ignore: val };
+      }
       this.save();
     });
 
@@ -319,11 +365,28 @@ export default class JamesSettings extends View {
     });
   }
 
+  selectPromptScope(scope, cx) {
+    this.promptScope = scope;
+    const pVal =
+      scope === "__global__"
+        ? this.prompt
+        : this.spaceConfigs[scope]?.prompt ?? "";
+    const iVal =
+      scope === "__global__"
+        ? this.globalIgnore
+        : this.spaceConfigs[scope]?.ignore ?? "";
+    this.promptInput.set_value(pVal);
+    this.ignoreInput.set_value(iVal);
+    cx.notify();
+  }
+
   save() {
     setShared("james-changes.ai", {
       provider: this.provider,
       model: this.model,
       prompt: this.prompt,
+      ignore: this.globalIgnore,
+      spaces: this.spaceConfigs,
     });
   }
 
@@ -1210,11 +1273,11 @@ export default class JamesSettings extends View {
                   .child(this.renderModelSelect(t))
               )
               .child(
-                // 3. Commit Prompt Template
+                // 3. Commit Prompt Template + Diff Ignore Patterns (Global or Per-Space)
                 v_flex()
                   .flex_1()
-                  .min_h(150)
-                  .gap(6)
+                  .min_h(190)
+                  .gap(8)
                   .child(
                     h_flex()
                       .items_center()
@@ -1243,20 +1306,98 @@ export default class JamesSettings extends View {
                           .hover((s) => s.bg(t.hover).text_color(t.foreground))
                           .on_mouse_down("left", (_ev, cx) => {
                             cx.stop_propagation();
-                            this.prompt = DEFAULT_PROMPT;
-                            this.promptInput.set_value(DEFAULT_PROMPT);
+                            if (this.promptScope === "__global__") {
+                              this.prompt = DEFAULT_PROMPT;
+                              this.globalIgnore = DEFAULT_IGNORE;
+                              this.promptInput.set_value(DEFAULT_PROMPT);
+                              this.ignoreInput.set_value(DEFAULT_IGNORE);
+                            } else {
+                              delete this.spaceConfigs[this.promptScope];
+                              this.promptInput.set_value("");
+                              this.ignoreInput.set_value("");
+                            }
                             this.save();
                             cx.notify();
                           })
                           .child(svg(ICON.undo).size(11).text_color(t.muted))
-                          .child(div().child(tr("set.ai_reset")))
+                          .child(
+                            div().child(
+                              this.promptScope === "__global__"
+                                ? tr("set.ai_reset")
+                                : tr("set.ai_clear_override")
+                            )
+                          )
+                      )
+                  )
+                  // Scope selector pills (Global + Spaces)
+                  .child(
+                    h_flex()
+                      .gap(6)
+                      .items_center()
+                      .flex_wrap()
+                      .child(
+                        (() => {
+                          const active = this.promptScope === "__global__";
+                          return h_flex()
+                            .id("ai-scope-global")
+                            .h(24)
+                            .px(9)
+                            .rounded(6)
+                            .items_center()
+                            .cursor_pointer()
+                            .border_1()
+                            .border_color(active ? t.accent : t.border)
+                            .bg(active ? t.selected : t.raised)
+                            .text_size(11)
+                            .font_weight(active ? 600 : 400)
+                            .text_color(active ? t.foreground : t.muted)
+                            .hover((s) => s.bg(t.hover))
+                            .on_mouse_down("left", (_ev, cx) => {
+                              cx.stop_propagation();
+                              this.selectPromptScope("__global__", cx);
+                            })
+                            .child(tr("todos.general"));
+                        })()
+                      )
+                      .children(
+                        spaces().map((sp) => {
+                          const key = sp.folder || sp.id;
+                          const active = this.promptScope === key;
+                          const hasCustom = Boolean(
+                            this.spaceConfigs[key]?.prompt?.trim() ||
+                              this.spaceConfigs[key]?.ignore?.trim()
+                          );
+                          return h_flex()
+                            .id(`ai-scope-${sp.id}`)
+                            .h(24)
+                            .px(9)
+                            .gap(5)
+                            .rounded(6)
+                            .items_center()
+                            .cursor_pointer()
+                            .border_1()
+                            .border_color(active ? t.accent : t.border)
+                            .bg(active ? t.selected : t.raised)
+                            .text_size(11)
+                            .font_weight(active ? 600 : 400)
+                            .text_color(active ? t.foreground : t.muted)
+                            .hover((s) => s.bg(t.hover))
+                            .on_mouse_down("left", (_ev, cx) => {
+                              cx.stop_propagation();
+                              this.selectPromptScope(key, cx);
+                            })
+                            .when(hasCustom, (el) =>
+                              el.child(div().size(6).rounded(3).bg(t.accent))
+                            )
+                            .child(sp.name);
+                        })
                       )
                   )
                   .child(
                     div()
                       .id("settings-prompt-textarea")
                       .flex_1()
-                      .min_h(120)
+                      .min_h(100)
                       .p(8)
                       .rounded(7)
                       .border_1()
@@ -1266,6 +1407,34 @@ export default class JamesSettings extends View {
                       .child(
                         Textarea.new(this.promptInput)
                           .size_full()
+                          .text_size(11.5)
+                          .text_color(t.foreground)
+                      )
+                  )
+                  // Diff Ignore Patterns input
+                  .child(
+                    v_flex()
+                      .gap(4)
+                      .child(
+                        div()
+                          .text_size(11.5)
+                          .font_weight(600)
+                          .text_color(t.muted)
+                          .child(
+                            this.promptScope === "__global__"
+                              ? tr("set.ai_ignore_global")
+                              : tr("set.ai_ignore_space")
+                          )
+                      )
+                      .child(
+                        Input.new(this.ignoreInput)
+                          .w_full()
+                          .h(28)
+                          .px(8)
+                          .rounded(6)
+                          .border_1()
+                          .border_color(t.border)
+                          .bg(t.canvas ?? t.raised)
                           .text_size(11.5)
                           .text_color(t.foreground)
                       )

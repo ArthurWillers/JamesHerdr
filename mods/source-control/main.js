@@ -33,6 +33,9 @@ const DEFAULT_PROMPT =
   "2. Second line: blank\n" +
   "3. Body: concise bullet points (- ...) explaining the key changes and why they were made.";
 
+const DEFAULT_IGNORE =
+  "package-lock.json, pnpm-lock.yaml, yarn.lock, Cargo.lock, bun.lockb, *.min.js, *.map";
+
 const FIXED_RULES =
   "Rules (mandatory):\n" +
   "- Output ONLY the raw commit message text (no markdown code fences, no commentary, no intro/outro).\n" +
@@ -53,6 +56,7 @@ const ICON = {
   arrowUp: "mods/source-control/icons/arrow-up.svg",
   refresh: "mods/source-control/icons/refresh.svg",
   cloud: "mods/source-control/icons/cloud.svg",
+  sliders: "mods/source-control/icons/sliders.svg",
   file: "mods/workspace-chrome/file-text.svg",
 };
 
@@ -905,7 +909,23 @@ export default class JamesChanges extends View {
     const root = this.root;
     const on = this.on;
     const model = (aiCfg.model || "").trim();
-    const promptText = (aiCfg.prompt || DEFAULT_PROMPT).trim();
+    const activeSpace = spaces().find((s) => s.active);
+    const spaceKey = activeSpace?.folder || root || activeSpace?.id || "";
+    const spaceCfg =
+      aiCfg.spaces?.[spaceKey] ??
+      aiCfg.spaces?.[root] ??
+      (activeSpace?.id ? aiCfg.spaces?.[activeSpace.id] : null) ??
+      {};
+    const promptText = (spaceCfg.prompt?.trim() || aiCfg.prompt?.trim() || DEFAULT_PROMPT).trim();
+    const rawGlobalIgnore = aiCfg.ignore !== undefined ? aiCfg.ignore : DEFAULT_IGNORE;
+    const ignorePatterns = [rawGlobalIgnore, spaceCfg.ignore || ""]
+      .join(",")
+      .split(/[\n,]+/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const excludeSpec = ignorePatterns.length
+      ? ["--", ".", ...ignorePatterns.map((p) => `:(glob,exclude)${p}`)]
+      : [];
 
     this.generating = true;
     this.note = null;
@@ -925,15 +945,15 @@ export default class JamesChanges extends View {
           exec(
             "git",
             useStaged
-              ? [...READ, "diff", "--cached", "--stat"]
-              : [...READ, "diff", "HEAD", "--stat"],
+              ? [...READ, "diff", "--cached", "--stat", ...excludeSpec]
+              : [...READ, "diff", "HEAD", "--stat", ...excludeSpec],
             { cwd: root, on }
           ),
           exec(
             "git",
             useStaged
-              ? [...READ, "diff", "--cached", "--no-color", "--no-ext-diff"]
-              : [...READ, "diff", "HEAD", "--no-color", "--no-ext-diff"],
+              ? [...READ, "diff", "--cached", "--no-color", "--no-ext-diff", ...excludeSpec]
+              : [...READ, "diff", "HEAD", "--no-color", "--no-ext-diff", ...excludeSpec],
             { cwd: root, on }
           ),
         ]);
@@ -956,6 +976,9 @@ export default class JamesChanges extends View {
         const statOut = (statRes.stdout || "").trim();
         if (!diffText && !statusOut && !statOut) {
           throw new Error("No uncommitted changes to analyze.");
+        }
+        if (!diffText && statusOut) {
+          diffText = "(Diff omitted by ignore patterns; analyze git status above.)";
         }
 
         // Balance diff budget across all changed files when the diff is large
@@ -1912,36 +1935,68 @@ export default class JamesChanges extends View {
               )
               .child(
                 h_flex()
-                  .id("sc-ai-generate-btn")
                   .absolute()
                   .right(6)
                   .bottom(6)
-                  .h(22)
-                  .px(8)
                   .gap(4)
-                  .rounded(5)
                   .items_center()
-                  .border_1()
-                  .border_color(t.border)
-                  .bg(t.raised)
-                  .text_size(11)
-                  .text_color(this.generating ? t.accent : t.muted)
-                  .cursor_pointer()
-                  .hover((s) => s.bg(t.hover).text_color(t.foreground))
-                  .on_mouse_down("left", (_ev, cx) => {
-                    cx.stop_propagation();
-                    this.generateAiCommit(cx);
-                  })
                   .child(
-                    this.generating
-                      ? svg(ICON.spinner)
-                          .size(11)
-                          .text_color(t.accent)
-                          .spin(900)
-                      : svg(ICON.sparkles).size(11).text_color(t.accent)
+                    h_flex()
+                      .id("sc-ai-space-cfg")
+                      .w(22)
+                      .h(22)
+                      .rounded(5)
+                      .items_center()
+                      .justify_center()
+                      .border_1()
+                      .border_color(t.border)
+                      .bg(t.raised)
+                      .cursor_pointer()
+                      .hover((s) => s.bg(t.hover))
+                      .on_mouse_down("left", (_ev, cx) => {
+                        cx.stop_propagation();
+                        const activeSpace = spaces().find((s) => s.active);
+                        const spaceKey = activeSpace?.folder || this.root || activeSpace?.id || "__global__";
+                        openOverlay({
+                          mod: "james-settings",
+                          kind: "dialog",
+                          width: 600,
+                          height: 500,
+                          props: { section: "ai-commit", spaceKey },
+                        });
+                      })
+                      .child(svg(ICON.sliders).size(11).text_color(t.muted))
                   )
                   .child(
-                    div().child(this.generating ? tr("sc.generating") : tr("sc.generate"))
+                    h_flex()
+                      .id("sc-ai-generate-btn")
+                      .h(22)
+                      .px(8)
+                      .gap(4)
+                      .rounded(5)
+                      .items_center()
+                      .border_1()
+                      .border_color(t.border)
+                      .bg(t.raised)
+                      .text_size(11)
+                      .text_color(this.generating ? t.accent : t.muted)
+                      .cursor_pointer()
+                      .hover((s) => s.bg(t.hover).text_color(t.foreground))
+                      .on_mouse_down("left", (_ev, cx) => {
+                        cx.stop_propagation();
+                        this.generateAiCommit(cx);
+                      })
+                      .child(
+                        this.generating
+                          ? svg(ICON.spinner)
+                              .size(11)
+                              .text_color(t.accent)
+                              .spin(900)
+                          : svg(ICON.sparkles).size(11).text_color(t.accent)
+                      )
+                      .child(
+                        div().child(this.generating ? tr("sc.generating") : tr("sc.generate"))
+                      )
                   )
               )
               .child(
