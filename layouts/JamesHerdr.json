@@ -51,8 +51,57 @@
       "resizable": false
     },
     {
-      "id": "work",
-      "type": "column",
+      "id": "center-stage",
+      "type": "stack",
+      "active": "work",
+      "children": [
+        {
+          "id": "dashboard-page",
+          "type": "block",
+          "content": {
+            "mod": "james-dashboard"
+          }
+        },
+        {
+          "id": "todos-page",
+          "type": "block",
+          "content": {
+            "mod": "james-todos",
+            "props": {
+              "scope": "general"
+            }
+          }
+        },
+        {
+          "id": "runbook-page",
+          "type": "block",
+          "content": {
+            "mod": "james-runbook",
+            "props": {
+              "scope": "general"
+            }
+          }
+        },
+        {
+          "id": "notes-page",
+          "type": "block",
+          "content": {
+            "mod": "james-notes",
+            "props": {
+              "scope": "general"
+            }
+          }
+        },
+        {
+          "id": "routines-page",
+          "type": "block",
+          "content": {
+            "mod": "james-routines"
+          }
+        },
+        {
+          "id": "work",
+          "type": "column",
       "children": [
         {
           "id": "tabs",
@@ -178,6 +227,8 @@
         }
       ],
       "resizable": false
+    }
+      ]
     }
   ],
   "background": "canvas",
