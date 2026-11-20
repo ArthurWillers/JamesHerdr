@@ -9,9 +9,10 @@ Personal [Herdr](https://herdr.dev) workspace layout, mods, and [Omarchy](https:
 - **`source-control`**: VS Code-inspired Source Control panel with multi-line commit composer, ephemeral AI commit message generation (`Generate`), split Commit/Push/Amend actions, `Staged Changes` / `Changes` with line counts and status tooltips, interactive commit `Graph`, and collapsible diff inspector.
 - **`james-settings`**: Dedicated settings dialog to configure:
   - **Default Agent** (for the `+` menu and `Ctrl+Shift+A` shortcut)
-  - **AI Commit** (CLI provider, auto-discovered local models, and editable prompt template)
-  - **Omarchy Theme** (shown only on compatible Omarchy systems; installs/uninstalls the `theme-set.d` hook and triggers manual sync)
-- **`james-tabs` & `james-new-menu`**: Custom tab bar with startup Omarchy theme sync and a clean `+` menu prioritizing the configured Default Agent and only showing genuinely installed CLIs.
+  - **AI Commit** (CLI provider, auto-discovered local models, and editable prompt template — kept in English regardless of UI language)
+  - **Language** (searchable selector supporting 50 locales, with `Auto (System)` detection across Linux, macOS, Windows, and Omarchy)
+  - **Omarchy** (shown only on compatible Omarchy systems; groups Omarchy hooks such as `theme-set.d` theme sync)
+- **`james-tabs` & `james-new-menu`**: Custom tab bar with automatic system/Omarchy language detection, startup Omarchy theme sync, and a clean `+` menu prioritizing the configured Default Agent and only showing genuinely installed CLIs.
 - **`james-pane`**: Rounded pane header matching the terminal frame radius.
 - **`themes/`**: Bundled native Omarchy themes styled with unified sidebar/topbar chrome (`colors.chrome = background`) and darker panel contrast (`colors.canvas = dark_background`).
 
