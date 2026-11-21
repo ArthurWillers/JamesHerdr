@@ -1,4 +1,4 @@
-import { shared } from "herdr";
+import { shared, setShared } from "herdr";
 
 export const SUPPORTED_LANGS = [
   { code: "auto", name: "Auto (System)", englishName: "Follow system language" },
@@ -2551,6 +2551,21 @@ export function currentLang() {
   const mode = shared("james.langMode") ?? "auto";
   if (mode !== "auto") return resolveLang(mode);
   return resolveLang(shared("james.lang") ?? "en");
+}
+
+export function supportedLangs() {
+  return SUPPORTED_LANGS;
+}
+
+let lastPublishedLang = null;
+
+export function publishI18n() {
+  const lang = currentLang();
+  if (lastPublishedLang === lang && shared("james.i18n.dict")) return;
+  lastPublishedLang = lang;
+  setShared("james.i18n.lang", lang);
+  setShared("james.i18n.langs", SUPPORTED_LANGS);
+  setShared("james.i18n.dict", { ...EN, ...(DICT[lang] ?? {}) });
 }
 
 export function tr(key, vars = null) {

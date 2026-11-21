@@ -1,7 +1,7 @@
 import { View, div, image, svg } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
 import { theme, run, props, window, shared, setShared, updates, layout } from "herdr";
-import { tr } from "./i18n.js";
+import { tr, publishI18n } from "./i18n.js";
 
 function find(node, id) {
   if (node?.id === id) return node;
@@ -25,12 +25,16 @@ function toggleSidebar() {
 }
 
 export default class WorkspaceChrome extends View {
+  init() {
+    publishI18n();
+  }
   button(id, label, action) {
     const t = theme();
     return div().id(id).size(26).flex_none().flex().items_center().justify_center().rounded(6).text_color(t.muted).hover(s => s.bg(t.hover).text_color(t.foreground))
       .on_mouse_down("left", (_e, cx) => cx.stop_propagation()).on_click(action).child(label);
   }
   render() {
+    publishI18n();
     const t = theme();
     const collapsed = narrow();
     if (props()?.footer) {

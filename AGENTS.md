@@ -14,11 +14,9 @@ Personal Herdr desktop layout, mods, themes, and i18n repository (`/home/avw/Cod
    - Any agent feature (Runbooks, Routines, To-dos, AI Commit) must work with the user's configured Default Agent (`shared("james.defaultAgent")`) or any installed CLI agent detected via `knownAgents()`.
 
 3. **i18n & AI Commit Prompt**:
-   - Master translations live in `i18n/i18n.js`.
-   - Herdr's mod sandbox forbids symlinks resolving outside a mod directory: after editing `i18n/i18n.js`, ALWAYS copy it to every mod:
-     ```bash
-     for d in /home/avw/Code/JamesHerdr/mods/*; do cp /home/avw/Code/JamesHerdr/i18n/i18n.js "$d/i18n.js"; done
-     ```
+   - Single master dictionary lives in `mods/james-chrome/i18n.js` (covers all 50 Omarchy locales in `SUPPORTED_LANGS`).
+   - `james-chrome` (always mounted first in `sidebar`) publishes the active merged dictionary via `publishI18n()` into `shared("james.i18n.dict")`, `shared("james.i18n.lang")`, and `shared("james.i18n.langs")`.
+   - All other mods use a tiny static 22-line `mods/*/i18n.js` client that reads `shared("james.i18n.*")` — NEVER copy the full dictionary into other mods.
    - Keep `DEFAULT_PROMPT` for AI Commit in English regardless of UI language.
 
 ## GPUI / Herdr Technical Rules

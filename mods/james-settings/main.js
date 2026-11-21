@@ -22,7 +22,7 @@ import {
   run,
   spaces,
 } from "herdr";
-import { tr, SUPPORTED_LANGS, currentLang } from "./i18n.js";
+import { tr, supportedLangs, currentLang } from "./i18n.js";
 
 const ICON = {
   sliders: "mods/source-control/icons/sliders.svg",
@@ -553,7 +553,7 @@ export default class JamesSettings extends View {
 
   filteredLangOptions() {
     const q = this.langSearch.trim().toLowerCase();
-    const mapped = SUPPORTED_LANGS.map((l) => ({
+    const mapped = supportedLangs().map((l) => ({
       value: l.code,
       label: l.name,
       meta: l.code === "auto" ? l.englishName : `${l.englishName} · ${l.code}`,
@@ -863,8 +863,9 @@ export default class JamesSettings extends View {
   renderLanguageSelect(t) {
     const mode = shared("james.langMode") ?? "auto";
     const active = currentLang();
-    const activeObj = SUPPORTED_LANGS.find((l) => l.code === active);
-    const selectedObj = SUPPORTED_LANGS.find((l) => l.code === mode);
+    const langs = supportedLangs();
+    const activeObj = langs.find((l) => l.code === active);
+    const selectedObj = langs.find((l) => l.code === mode);
     const triggerLabel =
       mode === "auto"
         ? `${selectedObj?.name ?? "Auto (System)"} — ${activeObj?.name ?? active}`
@@ -1612,7 +1613,7 @@ export default class JamesSettings extends View {
           })
           .when(this.section === "language", (panel) => {
             const active = currentLang();
-            const activeObj = SUPPORTED_LANGS.find((l) => l.code === active);
+            const activeObj = supportedLangs().find((l) => l.code === active);
             return panel.child(
               v_flex()
                 .flex_1()
