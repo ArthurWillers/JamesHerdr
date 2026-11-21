@@ -18,6 +18,7 @@ import {
   setShared,
   checking,
   home,
+  settings,
 } from "herdr";
 
 const ICON = {
@@ -155,6 +156,11 @@ export default class ProjectsSidebar extends View {
     this.collapsed = new Set();
     this.foldedMachines = new Set();
     this.runningRoutines = new Set();
+    this.dragTab = null;
+    this.draggingTab = false;
+    this.dragStart = null;
+    this.dragPos = null;
+    this.dragOverTab = null;
     if (!checking()) {
       cx.timer.every(15000, (timerCx) => this.tickRoutines(timerCx));
     }
@@ -263,6 +269,37 @@ export default class ProjectsSidebar extends View {
         });
       }
     }
+  }
+
+  mergeTabs(fromTabId, toTabId, spaceId, cx) {
+    if (!fromTabId || !toTabId || fromTabId === toTabId) return;
+    const fromTerms = panes()
+      .filter((p) => p.tab === fromTabId && p.terminal)
+      .map((p) => p.terminal);
+    if (fromTerms.length === 0) return;
+
+    for (const term of fromTerms) {
+      run("terminal.park", { terminal: term });
+    }
+
+    let attempts = 0;
+    const attach = (timerCx) => {
+      attempts++;
+      const stillOpen = panes().some((p) => fromTerms.includes(p.terminal));
+      if (stillOpen && attempts < 30) {
+        timerCx.timer.after(40, attach);
+        return;
+      }
+      run("layout.select", { stack: "center-stage", child: "work" });
+      if (spaceId) run("space.select", { id: spaceId });
+      run("tab.select", { id: toTabId });
+      timerCx.timer.after(40, () => {
+        for (const term of fromTerms) {
+          run("terminal.keep", { terminal: term, place: "right" });
+        }
+      });
+    };
+    cx.timer.after(40, attach);
   }
 
   toggleSpace(id, cx) {
@@ -602,6 +639,14 @@ export default class ProjectsSidebar extends View {
             const activeTab = isCurrentSpace && foc?.tab === tab.id;
             const label = tabTitle(tab, lead);
 
+            const isDragSource = this.draggingTab && this.dragTab?.id === tab.id;
+            const isDropTarget =
+              this.draggingTab &&
+              this.dragTab &&
+              this.dragTab.id !== tab.id &&
+              this.dragTab.spaceId === s.id &&
+              this.dragOverTab === tab.id;
+
             rows.push(
               h_flex()
                 .id(`project-tab-${tab.id}`)
@@ -611,9 +656,48 @@ export default class ProjectsSidebar extends View {
                 .gap(7)
                 .rounded(6)
                 .items_center()
-                .cursor_pointer()
-                .when(activeTab && !onCenterPage, (e) => e.bg(t.surface))
-                .hover((e) => e.bg(t.hover))
+                .when(this.draggingTab, (e) => e.cursor_grabbing())
+                .when(!this.draggingTab, (e) => e.cursor_pointer())
+                .border_1()
+                .border_color(isDropTarget ? t.accent : isDragSource ? t.accent + "55" : t.chrome)
+                .when(isDropTarget, (e) => e.bg(t.selected))
+                .when(isDragSource, (e) => e.bg(t.canvas ?? t.chrome))
+                .when(!isDropTarget && !isDragSource && activeTab && !onCenterPage, (e) => e.bg(t.surface))
+                .hover((e) => e.bg(isDropTarget ? t.selected : isDragSource ? t.canvas ?? t.chrome : t.hover))
+                .on_hover((hovered, cx) => {
+                  if (!this.dragTab || this.dragTab.id === tab.id || this.dragTab.spaceId !== s.id) return;
+                  const next = hovered ? tab.id : this.dragOverTab === tab.id ? null : this.dragOverTab;
+                  if (next !== this.dragOverTab) {
+                    this.dragOverTab = next;
+                    cx.notify();
+                  }
+                })
+                .on_mouse_down("left", (ev, cx) => {
+                  cx.stop_propagation();
+                  this.dragTab = { id: tab.id, spaceId: s.id, name: label };
+                  this.draggingTab = false;
+                  this.dragStart = ev.position ?? null;
+                  this.dragOverTab = null;
+                  cx.notify();
+                })
+                .on_mouse_up("left", (_ev, cx) => {
+                  cx.stop_propagation();
+                  const from = this.dragTab;
+                  const wasDragging = this.draggingTab;
+                  this.dragTab = null;
+                  this.draggingTab = false;
+                  this.dragStart = null;
+                  this.dragPos = null;
+                  this.dragOverTab = null;
+                  if (from && from.id !== tab.id && from.spaceId === s.id) {
+                    this.mergeTabs(from.id, tab.id, s.id, cx);
+                  } else if (!wasDragging) {
+                    run("layout.select", { stack: "center-stage", child: "work" });
+                    if (!isCurrentSpace) run("space.select", { id: s.id });
+                    run("tab.select", { id: tab.id });
+                  }
+                  cx.notify();
+                })
                 .on_mouse_down("right", (_ev, e) => {
                   e.stop_propagation();
                   openOverlay({
@@ -622,11 +706,6 @@ export default class ProjectsSidebar extends View {
                     width: 200,
                     props: { tab: "tab", target: { id: tab.id, space: s.id } },
                   });
-                })
-                .on_click(() => {
-                  run("layout.select", { stack: "center-stage", child: "work" });
-                  if (!isCurrentSpace) run("space.select", { id: s.id });
-                  run("tab.select", { id: tab.id });
                 })
                 .child(
                   progIcon(
@@ -776,9 +855,33 @@ export default class ProjectsSidebar extends View {
       .id("projects-sidebar")
       .size_full()
       .min_h(0)
+      .relative()
       .px(6)
       .py(6)
       .gap(4)
+      .when(this.draggingTab, (e) => e.cursor_grabbing())
+      .on_mouse_move((ev, cx) => {
+        if (!this.dragTab) return;
+        if (!this.draggingTab && this.dragStart && ev.position) {
+          const dx = Math.abs(ev.position.x - this.dragStart.x);
+          const dy = Math.abs(ev.position.y - this.dragStart.y);
+          if (dx > 4 || dy > 4) this.draggingTab = true;
+        }
+        if (this.draggingTab && ev.local_position) {
+          this.dragPos = ev.local_position;
+          cx.notify();
+        }
+      })
+      .on_mouse_up("left", (_e, cx) => {
+        if (this.dragTab || this.dragOverTab || this.draggingTab) {
+          this.dragTab = null;
+          this.draggingTab = false;
+          this.dragStart = null;
+          this.dragPos = null;
+          this.dragOverTab = null;
+          cx.notify();
+        }
+      })
       .child(cockpitDock)
       .child(header)
       .child(
@@ -791,6 +894,32 @@ export default class ProjectsSidebar extends View {
           .track_scroll(this.scroll)
           .children(rows)
       )
+      .when(this.draggingTab && Boolean(this.dragPos) && Boolean(this.dragTab), (el) => {
+        const zoom = settings().zoom || 1;
+        const hasTag = Boolean(this.dragOverTab);
+        const estW = Math.min(190, Math.max(52, (this.dragTab.name?.length ?? 4) * 7 + (hasTag ? 54 : 22)));
+        return el.child(
+          h_flex()
+            .absolute()
+            .left(Math.max(4, Math.round(this.dragPos.x / zoom - estW / 2)))
+            .top(Math.max(4, Math.round(this.dragPos.y / zoom - 13)))
+            .h(26)
+            .px(9)
+            .gap(6)
+            .rounded(6)
+            .items_center()
+            .border_1()
+            .border_color(t.accent)
+            .bg(t.popover ?? t.surface)
+            .text_size(11.5)
+            .font_weight(600)
+            .text_color(t.foreground)
+            .child(div().max_w(130).truncate().child(this.dragTab.name))
+            .when(hasTag, (b) =>
+              b.child(div().text_size(10).text_color(t.accent).child(tr("tabs.drop_split")))
+            )
+        );
+      })
       .child(
         h_flex()
           .id("james-settings-open")

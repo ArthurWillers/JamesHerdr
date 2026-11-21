@@ -31,6 +31,11 @@ function label(tab, lead) {
 export default class Tabs extends View {
   init(_props, cx) {
     this.pressed = null;
+    this.dragging = false;
+    this.dragStart = null;
+    this.dragPos = null;
+    this.dragName = "";
+    this.dragTarget = null;
     this.scroll = ScrollHandle.new();
     const langPath = `${home()}/.config/omarchy/language`;
     const syncSystemLang = async () => {
@@ -238,6 +243,35 @@ export default class Tabs extends View {
     localStorage.setItem("panels", JSON.stringify(this.panels));
   }
 
+  mergeTabs(fromTabId, toTabId, cx) {
+    if (!fromTabId || !toTabId || fromTabId === toTabId) return;
+    const fromTerms = panes()
+      .filter((p) => p.tab === fromTabId && p.terminal)
+      .map((p) => p.terminal);
+    if (fromTerms.length === 0) return;
+
+    for (const term of fromTerms) {
+      run("terminal.park", { terminal: term });
+    }
+
+    let attempts = 0;
+    const attach = (timerCx) => {
+      attempts++;
+      const stillOpen = panes().some((p) => fromTerms.includes(p.terminal));
+      if (stillOpen && attempts < 30) {
+        timerCx.timer.after(40, attach);
+        return;
+      }
+      run("tab.select", { id: toTabId });
+      timerCx.timer.after(40, () => {
+        for (const term of fromTerms) {
+          run("terminal.keep", { terminal: term, place: "right" });
+        }
+      });
+    };
+    cx.timer.after(40, attach);
+  }
+
   render() {
     const t = theme();
     const space = spaces().find(p => p.active);
@@ -256,23 +290,96 @@ export default class Tabs extends View {
       const lead = panes().find(p => p.tab === c.id && p.program?.agent) ?? panes().find(p => p.tab === c.id);
       const program = lead?.program;
       const name = label(c, lead);
+      const isSource = this.dragging && this.pressed === i;
+      const isDraggingOther = this.dragging && this.pressed !== null && this.pressed !== i;
+      const dropMode = isDraggingOther && this.dragTarget?.index === i ? this.dragTarget.mode : null;
+      const detectMode = (e) => {
+        const w = e?.bounds?.width ?? 0;
+        if (w <= 0 || e?.local_position == null) return "merge";
+        const ratio = e.local_position.x / w;
+        return ratio < 0.22 ? "left" : ratio > 0.78 ? "right" : "merge";
+      };
       return h_flex().id(`tab-${c.id}`).h(29).px(10).gap(7).rounded(7).items_center().flex_none().text_size(12.8)
+        .when(this.dragging, el => el.cursor_grabbing())
+        .when(!this.dragging, el => el.cursor_pointer())
         // A rename or status dot on this or an earlier tab can push the active one out.
         .when(i <= active, el => el.on_size_change((_size, cx) => { this.scroll.scroll_to_item(active); cx.notify(); }))
-        .border(1).border_color(c.active ? t.border : t.chrome).bg(c.active ? t.raised : t.chrome).text_color(c.active ? t.foreground : t.muted)
-        .hover(s => s.bg(t.hover))
-        .on_mouse_down("left", (e, cx) => { cx.stop_propagation(); this.pressed = i; if (e.click_count === 2) run("tab.rename", { id: c.id }); })
-        .on_mouse_up("left", () => {
-          const from = this.pressed; this.pressed = null;
-          if (from !== null && from !== i) run("tab.move", { id: shown[from].id, index: space.tabs.findIndex(x => x.id === c.id) + 1 });
-          else run("tab.select", { id: c.id });
+        .border(1)
+        .border_color(dropMode === "merge" ? t.accent : isSource ? t.accent + "55" : c.active ? t.border : t.chrome)
+        .when(dropMode === "left", el => el.border_l(3).border_color(t.accent))
+        .when(dropMode === "right", el => el.border_r(3).border_color(t.accent))
+        .bg(dropMode === "merge" ? t.selected : isSource ? t.canvas ?? t.chrome : c.active ? t.raised : t.chrome)
+        .text_color(isSource ? t.dim : c.active || dropMode === "merge" ? t.foreground : t.muted)
+        .hover(s => s.bg(dropMode === "merge" ? t.selected : isSource ? t.canvas ?? t.chrome : t.hover))
+        .on_hover((hovered, cx) => {
+          if (this.pressed === null || this.pressed === i) return;
+          if (!hovered && this.dragTarget?.index === i) {
+            this.dragTarget = null;
+            cx.notify();
+          } else if (hovered && this.dragTarget?.index !== i) {
+            this.dragTarget = { index: i, mode: "merge" };
+            cx.notify();
+          }
+        })
+        .on_mouse_move((e, cx) => {
+          if (this.pressed === null || this.pressed === i) return;
+          const mode = detectMode(e);
+          if (this.dragTarget?.index !== i || this.dragTarget?.mode !== mode) {
+            this.dragTarget = { index: i, mode };
+            cx.notify();
+          }
+        })
+        .on_mouse_down("left", (e, cx) => {
+          cx.stop_propagation();
+          this.pressed = i;
+          this.dragging = false;
+          this.dragStart = e.position ?? null;
+          this.dragName = name;
+          this.dragTarget = null;
+          if (e.click_count === 2) run("tab.rename", { id: c.id });
+          cx.notify();
+        })
+        .on_mouse_up("left", (e, cx) => {
+          cx.stop_propagation();
+          const from = this.pressed;
+          const wasDragging = this.dragging;
+          const mode = this.dragTarget?.index === i ? this.dragTarget.mode : detectMode(e);
+          this.pressed = null;
+          this.dragging = false;
+          this.dragStart = null;
+          this.dragPos = null;
+          this.dragTarget = null;
+          if (from !== null && from !== i && shown[from]) {
+            if (mode === "merge") {
+              this.mergeTabs(shown[from].id, c.id, cx);
+            } else {
+              const targetPos = space.tabs.findIndex(x => x.id === c.id) + 1;
+              run("tab.move", { id: shown[from].id, index: targetPos });
+            }
+          } else if (!wasDragging) {
+            run("tab.select", { id: c.id });
+          }
+          cx.notify();
         })
         .on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); openOverlay({ mod: "menu", kind: "popup", width: 200, props: { tab: "tab", target: { id: c.id, space: space.id } } }); })
-        .when(Boolean(program?.icon), el => el.child(program.tint ? svg(program.icon).size(14).text_color(t.muted) : image(program.icon).size(14)))
+        .when(Boolean(program?.icon), el => el.child(program.tint ? svg(program.icon).size(14).text_color(isSource ? t.dim : t.muted) : image(program.icon).size(14)))
         .child(div().max_w(170).truncate().child(c.zoomed ? `${name} Z` : name))
+        .when(dropMode === "merge", el =>
+          el.child(
+            div()
+              .px(5)
+              .py(1)
+              .rounded(4)
+              .bg(t.accent)
+              .text_size(9.5)
+              .font_weight(700)
+              .text_color(t.accent_foreground ?? "#ffffff")
+              .child(tr("tabs.drop_split"))
+          )
+        )
         .when(c.status === "working", el => el.child(svg("mods/workspace-chrome/spinner.svg").size(12).flex_none().text_color(t.working).spin(900)))
         .when(c.status === "blocked" || c.status === "done", el => el.child(div().size(6).rounded(3).bg(t[c.status])))
-        .when(c.active, el => el.child(div().id(`close-${c.id}`).text_color(t.dim).on_mouse_down("left", stop).on_click((_e, cx) => { cx.stop_propagation(); run("tab.close", { id: c.id }); }).child(svg("mods/pane/close.svg").size(12))));
+        .when(c.active && !this.dragging, el => el.child(div().id(`close-${c.id}`).text_color(t.dim).on_mouse_down("left", stop).on_click((_e, cx) => { cx.stop_propagation(); run("tab.close", { id: c.id }); }).child(svg("mods/pane/close.svg").size(12))));
     };
     const root = layout(), sidebar = find(root, "sidebar"), w = window();
     // Old saved rails and a dragged-narrow sidebar can be smaller than the window buttons.
@@ -293,8 +400,28 @@ export default class Tabs extends View {
           else { run("layout.select", { stack: "panel-body", child: id }); run("layout.show", { id: "panel" }); }
         }).child(svg(icon).size(14)).child(label);
     };
-    return h_flex().size_full().min_w(0).px(10).pl(lightsPadding).gap(3).items_center().bg(t.chrome).border_b(1).border_color(t.border)
-      .on_mouse_up("left", () => { this.pressed = null; })
+    return h_flex().size_full().min_w(0).relative().px(10).pl(lightsPadding).gap(3).items_center().bg(t.chrome).border_b(1).border_color(t.border)
+      .when(this.dragging, el => el.cursor_grabbing())
+      .on_mouse_move((e, cx) => {
+        if (this.pressed === null) return;
+        if (!this.dragging && this.dragStart && e.position) {
+          const dx = Math.abs(e.position.x - this.dragStart.x);
+          const dy = Math.abs(e.position.y - this.dragStart.y);
+          if (dx > 4 || dy > 4) this.dragging = true;
+        }
+        if (this.dragging && e.local_position) {
+          this.dragPos = e.local_position;
+          cx.notify();
+        }
+      })
+      .on_mouse_up("left", (_e, cx) => {
+        this.pressed = null;
+        this.dragging = false;
+        this.dragStart = null;
+        this.dragPos = null;
+        this.dragTarget = null;
+        cx.notify();
+      })
       .on_scroll_wheel(e => this.wheel(e))
       .child(h_flex().id("tab-scroll").flex_1().min_w(0).h_full().items_center().gap(3).overflow_x_scrollbar().track_scroll(this.scroll)
         .on_size_change((_size, cx) => { if (active >= 0) { this.scroll.scroll_to_item(active); cx.notify(); } })
@@ -302,6 +429,35 @@ export default class Tabs extends View {
       .child(button("tab-new", "+", () => openOverlay({ mod: "james-new-menu", kind: "popup", width: 250, height: 527 })))
       .when(w?.buttons, el => el.child(button("minimize", w.platform === "windows" ? svg("mods/tabs/win-min.svg").size(16) : "−", () => run("window.minimize")))
         .child(button("maximize", w.platform === "windows" ? svg(`mods/tabs/${w.maximized ? "win-restore" : "win-max"}.svg`).size(16) : "□", () => run("window.maximize")))
-        .child(button("close-window", w.platform === "windows" ? svg("mods/tabs/win-close.svg").size(16) : svg("mods/pane/close.svg").size(13), () => run("window.close"))));
+        .child(button("close-window", w.platform === "windows" ? svg("mods/tabs/win-close.svg").size(16) : svg("mods/pane/close.svg").size(13), () => run("window.close"))))
+      .when(this.dragging && Boolean(this.dragPos), el => {
+        const zoom = settings().zoom || 1;
+        const hasTag = Boolean(this.dragTarget?.mode);
+        const estW = Math.min(190, Math.max(52, this.dragName.length * 7 + (hasTag ? 54 : 22)));
+        return el.child(
+          h_flex()
+            .absolute()
+            .left(Math.max(4, Math.round(this.dragPos.x / zoom - estW / 2)))
+            .top(7)
+            .h(26)
+            .px(9)
+            .gap(6)
+            .rounded(6)
+            .items_center()
+            .border_1()
+            .border_color(t.accent)
+            .bg(t.popover ?? t.surface)
+            .text_size(11.5)
+            .font_weight(600)
+            .text_color(t.foreground)
+            .child(div().max_w(130).truncate().child(this.dragName))
+            .when(this.dragTarget?.mode === "merge", b =>
+              b.child(div().text_size(10).text_color(t.accent).child(tr("tabs.drop_split")))
+            )
+            .when(this.dragTarget?.mode === "left" || this.dragTarget?.mode === "right", b =>
+              b.child(div().text_size(10).text_color(t.muted).child("↔"))
+            )
+        );
+      });
   }
 }
