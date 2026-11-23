@@ -407,8 +407,9 @@ export default class ProjectsSidebar extends View {
     const ghCache = shared("james-github.cache") ?? {};
     const ghMine = Array.isArray(ghCache.mine) ? ghCache.mine : [];
     const ghReviews = Array.isArray(ghCache.reviews) ? ghCache.reviews : [];
-    const ghFailingCount = [...ghMine, ...ghReviews].filter(
-      (p) => p.ciState === "FAILURE" || p.ciState === "ERROR"
+    const ghRepoCi = Array.isArray(ghCache.repoCi) ? ghCache.repoCi : [];
+    const ghFailingCount = [...ghMine, ...ghReviews, ...ghRepoCi].filter(
+      (p) => (p.ciState ?? p.state) === "FAILURE" || (p.ciState ?? p.state) === "ERROR"
     ).length;
     const ghBadgeCount = ghFailingCount > 0 ? ghFailingCount : ghReviews.length;
     const ghBadgeColor = ghFailingCount > 0 ? "#f14c4c" : t.accent;

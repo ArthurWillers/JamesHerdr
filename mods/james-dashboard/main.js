@@ -900,8 +900,9 @@ export default class JamesDashboard extends View {
                               const gh = shared("james-github.cache") ?? {};
                               const mine = Array.isArray(gh.mine) ? gh.mine : [];
                               const revs = Array.isArray(gh.reviews) ? gh.reviews : [];
-                              const failing = [...mine, ...revs].filter(
-                                (p) => p.ciState === "FAILURE" || p.ciState === "ERROR"
+                              const repoCi = Array.isArray(gh.repoCi) ? gh.repoCi : [];
+                              const failing = [...mine, ...revs, ...repoCi].filter(
+                                (p) => (p.ciState ?? p.state) === "FAILURE" || (p.ciState ?? p.state) === "ERROR"
                               ).length;
                               const total = mine.length + revs.length;
                               return appRow(
