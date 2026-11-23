@@ -11,6 +11,7 @@ const ICON = {
   close: "mods/james-chrome/x.svg",
   refresh: "mods/source-control/icons/refresh.svg",
   sparkles: "mods/source-control/icons/sparkles.svg",
+  edit: "mods/james-chrome/edit.svg",
 };
 
 const STORE_KEY = "james-runbook.custom";
@@ -44,6 +45,14 @@ function tipAbove(id, label, triggerEl, t, anchor = "bottom_center") {
     );
 }
 
+const interactiveShellArgv = (cmd) => [
+  "sh",
+  "-c",
+  'S="${SHELL:-bash}"; exec "$S" -ic \'eval "$1"; echo ""; exec "${SHELL:-bash}"\' _ "$1"',
+  "_",
+  cmd,
+];
+
 function activeSpaceInfo() {
   const space = spaces().find((s) => s.active);
   const f = focused();
@@ -65,8 +74,14 @@ export default class JamesRunbook extends View {
     this.fixedGeneral = props()?.scope === "general";
     this.tab = this.fixedGeneral ? "general" : "space"; // "space" | "general"
     this.adding = false;
-    this.newKind = "shell"; // "shell" | "agent"
+    this.editingId = null;
+    this.newKind = "shell"; // "shell" | "agent" | "split"
     this.newAgentKey = "__default__";
+    this.splitDir = "right"; // "right" | "down"
+    this.splitInputs = [
+      InputState.new({ placeholder: `${tr("runbook.terminal")} 1…` }),
+      InputState.new({ placeholder: `${tr("runbook.terminal")} 2…` }),
+    ];
     this.installedAgents = [];
     this.detected = [];
     this.detectedKey = "";
@@ -214,17 +229,102 @@ export default class JamesRunbook extends View {
     });
   }
 
+  addSplitSlot(value = "", cx) {
+    const inp = InputState.new({
+      placeholder: `${tr("runbook.terminal")} ${this.splitInputs.length + 1}…`,
+      value,
+    });
+    this.splitInputs.push(inp);
+    if (cx) cx.notify();
+  }
+
+  removeSplitSlot(idx, cx) {
+    if (this.splitInputs.length <= 2) return;
+    this.splitInputs.splice(idx, 1);
+    cx.notify();
+  }
+
+  pickForSplit(cmd, cx) {
+    const emptyIdx = this.splitInputs.findIndex((inp) => !(inp.value() ?? "").trim());
+    if (emptyIdx >= 0) {
+      this.splitInputs[emptyIdx].set_value(cmd);
+    } else {
+      this.addSplitSlot(cmd, null);
+    }
+    cx.notify();
+  }
+
+  editCommand(item, cx) {
+    this.editingId = item.id;
+    this.adding = true;
+    this.nameInput.set_value(item.name || "");
+    this.newKind = item.kind === "split" ? "split" : item.kind === "agent" ? "agent" : "shell";
+    if (this.newKind === "split") {
+      this.splitDir = item.splitDir === "down" ? "down" : "right";
+      const cmds = Array.isArray(item.cmds) && item.cmds.length > 0 ? item.cmds : [item.cmd || ""];
+      while (cmds.length < 2) cmds.push("");
+      this.splitInputs = cmds.map((c, idx) =>
+        InputState.new({
+          placeholder: `${tr("runbook.terminal")} ${idx + 1}…`,
+          value: c,
+        })
+      );
+      this.cmdInput.set_value("");
+    } else {
+      this.cmdInput.set_value(item.cmd || "");
+      this.newAgentKey = item.agentKey || "__default__";
+    }
+    cx.timer.after(20, () => this.nameInput.focus());
+    cx.notify();
+  }
+
   addCommand(cx) {
+    const bucket = this.currentBucket();
+    const list = [...(this.getData()[bucket] ?? [])];
+
+    const upsert = (entry) => {
+      if (this.editingId) {
+        const idx = list.findIndex((x) => x.id === this.editingId);
+        if (idx >= 0) {
+          list[idx] = { ...entry, id: this.editingId };
+          return;
+        }
+      }
+      list.push(entry);
+    };
+
+    if (this.newKind === "split") {
+      const cmds = this.splitInputs.map((i) => (i.value() ?? "").trim()).filter(Boolean);
+      if (cmds.length < 2) return;
+      const name = (this.nameInput.value() ?? "").trim() || cmds.map((c) => c.split(/\s+/)[0]).join(" + ");
+      upsert({
+        id: `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        name,
+        cmd: cmds.join("  ·  "),
+        cmds,
+        splitDir: this.splitDir,
+        kind: "split",
+      });
+      this.saveList(bucket, list);
+      this.nameInput.set_value("");
+      this.splitInputs = [
+        InputState.new({ placeholder: `${tr("runbook.terminal")} 1…` }),
+        InputState.new({ placeholder: `${tr("runbook.terminal")} 2…` }),
+      ];
+      this.adding = false;
+      this.editingId = null;
+      cx.notify();
+      return;
+    }
+
     const cmd = (this.cmdInput.value() ?? "").trim();
     if (!cmd) return;
     const name = (this.nameInput.value() ?? "").trim() || cmd.split(/\s+/)[0];
-    const bucket = this.currentBucket();
-    const list = [...(this.getData()[bucket] ?? [])];
     const pickedAgent =
       this.newKind === "agent" && this.newAgentKey !== "__default__"
         ? this.installedAgents.find((a) => a.key === this.newAgentKey)
         : null;
-    list.push({
+    upsert({
       id: `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
       name,
       cmd,
@@ -237,6 +337,7 @@ export default class JamesRunbook extends View {
     this.nameInput.set_value("");
     this.cmdInput.set_value("");
     this.adding = false;
+    this.editingId = null;
     cx.notify();
   }
 
@@ -279,7 +380,41 @@ export default class JamesRunbook extends View {
     });
   }
 
-  runCommand(item) {
+  runSplit(item, cx) {
+    const cmds = Array.isArray(item.cmds) ? item.cmds.filter(Boolean) : [];
+    if (cmds.length === 0) return;
+    const { space, folder } = activeSpaceInfo();
+    if (this.fixedGeneral) {
+      run("layout.select", { stack: "center-stage", child: "work" });
+    }
+    run("tab.new", {
+      name: item.name,
+      space: space?.id,
+      folder: folder || undefined,
+      argv: interactiveShellArgv(cmds[0]),
+    });
+    const dir = item.splitDir === "down" ? "down" : "right";
+    const rest = cmds.slice(1);
+    const step = (idx, timerCx) => {
+      if (idx >= rest.length) return;
+      run("pane.split", {
+        direction: dir,
+        argv: interactiveShellArgv(rest[idx]),
+      });
+      if (idx + 1 < rest.length) {
+        timerCx.timer.after(110, (nextCx) => step(idx + 1, nextCx));
+      }
+    };
+    if (rest.length > 0) {
+      cx.timer.after(130, (timerCx) => step(0, timerCx));
+    }
+  }
+
+  runCommand(item, cx) {
+    if (item.kind === "split") {
+      this.runSplit(item, cx);
+      return;
+    }
     if (item.kind === "agent") {
       this.runWithAgent(item);
       return;
@@ -292,13 +427,7 @@ export default class JamesRunbook extends View {
       name: item.name,
       space: space?.id,
       folder: folder || undefined,
-      argv: [
-        "sh",
-        "-c",
-        'S="${SHELL:-bash}"; exec "$S" -ic \'eval "$1"; echo ""; exec "${SHELL:-bash}"\' _ "$1"',
-        "_",
-        item.cmd,
-      ],
+      argv: interactiveShellArgv(item.cmd),
     });
   }
 
@@ -319,7 +448,7 @@ export default class JamesRunbook extends View {
       .on_mouse_down("left", (_ev, cx) => {
         cx.stop_propagation();
         tipState.id = null;
-        this.runCommand(item);
+        this.runCommand(item, cx);
       })
       .child(svg(ICON.play).size(11).text_color(t.accent));
 
@@ -364,6 +493,20 @@ export default class JamesRunbook extends View {
                     .child(item.agentName || tr("routines.mode_agent"))
                 )
               )
+              .when(item.kind === "split", (el) =>
+                el.child(
+                  div()
+                    .px(5)
+                    .py(1)
+                    .rounded(4)
+                    .bg(t.selected)
+                    .text_size(9.5)
+                    .text_color(t.accent)
+                    .child(
+                      `${(item.cmds ?? []).length}× ${tr("runbook.split_label")} ${item.splitDir === "down" ? "↓" : "→"}`
+                    )
+                )
+              )
               .when(Boolean(item.source), (el) =>
                 el.child(
                   div()
@@ -385,7 +528,7 @@ export default class JamesRunbook extends View {
               .child(item.cmd)
           )
       )
-      .when(item.kind !== "agent", (row) => {
+      .when(item.kind !== "agent" && item.kind !== "split", (row) => {
         const agBtn = h_flex()
           .id(`rb-ag-${item.id}`)
           .w(24)
@@ -409,6 +552,22 @@ export default class JamesRunbook extends View {
       })
       .child(playBtn)
       .when(isCustom, (row) => {
+        const editBtn = h_flex()
+          .id(`rb-edit-${item.id}`)
+          .w(22)
+          .h(22)
+          .rounded(5)
+          .flex_none()
+          .items_center()
+          .justify_center()
+          .cursor_pointer()
+          .hover((s) => s.bg(t.surface))
+          .on_mouse_down("left", (_ev, cx) => {
+            cx.stop_propagation();
+            tipState.id = null;
+            this.editCommand(item, cx);
+          })
+          .child(svg(ICON.edit).size(11).text_color(t.muted));
         const delBtn = h_flex()
           .id(`rb-del-${item.id}`)
           .w(22)
@@ -422,10 +581,14 @@ export default class JamesRunbook extends View {
           .on_mouse_down("left", (_ev, cx) => {
             cx.stop_propagation();
             tipState.id = null;
+            if (this.editingId === item.id) {
+              this.editingId = null;
+              this.adding = false;
+            }
             this.deleteCommand(item.id, cx);
           })
           .child(svg(ICON.close).size(11).text_color(t.dim));
-        return row.child(delBtn);
+        return row.child(editBtn).child(delBtn);
       });
   }
 
@@ -489,8 +652,18 @@ export default class JamesRunbook extends View {
       .on_mouse_down("left", (_ev, cx) => {
         cx.stop_propagation();
         tipState.id = null;
-        this.adding = !this.adding;
-        if (this.adding) {
+        if (this.adding && !this.editingId) {
+          this.adding = false;
+        } else {
+          this.editingId = null;
+          this.adding = true;
+          this.newKind = "shell";
+          this.nameInput.set_value("");
+          this.cmdInput.set_value("");
+          this.splitInputs = [
+            InputState.new({ placeholder: `${tr("runbook.terminal")} 1…` }),
+            InputState.new({ placeholder: `${tr("runbook.terminal")} 2…` }),
+          ];
           cx.timer.after(20, () => this.nameInput.focus());
         }
         cx.notify();
@@ -589,19 +762,21 @@ export default class JamesRunbook extends View {
                 .text_size(12)
                 .text_color(t.foreground)
             )
-            .child(
-              Input.new(this.cmdInput)
-                .w_full()
-                .h(28)
-                .px(8)
-                .rounded(6)
-                .border_1()
-                .border_color(t.border)
-                .bg(t.canvas ?? t.background)
-                .text_size(12)
-                .text_color(t.foreground)
+            .when(this.newKind !== "split", (form) =>
+              form.child(
+                Input.new(this.cmdInput)
+                  .w_full()
+                  .h(28)
+                  .px(8)
+                  .rounded(6)
+                  .border_1()
+                  .border_color(t.border)
+                  .bg(t.canvas ?? t.background)
+                  .text_size(12)
+                  .text_color(t.foreground)
+              )
             )
-            // Type selector (Shell vs Agent) + Agent picker
+            // Type selector (Shell vs Agent vs Split Multi-Terminal) + Agent picker
             .child(
               h_flex()
                 .gap(6)
@@ -646,6 +821,26 @@ export default class JamesRunbook extends View {
                       cx.notify();
                     })
                     .child(tr("dash.agent_label"))
+                )
+                .child(
+                  h_flex()
+                    .id("rb-kind-split")
+                    .h(24)
+                    .px(9)
+                    .rounded(5)
+                    .items_center()
+                    .cursor_pointer()
+                    .border_1()
+                    .border_color(this.newKind === "split" ? t.accent : t.border)
+                    .bg(this.newKind === "split" ? t.selected : t.raised)
+                    .text_size(11)
+                    .text_color(this.newKind === "split" ? t.foreground : t.muted)
+                    .on_mouse_down("left", (_ev, cx) => {
+                      cx.stop_propagation();
+                      this.newKind = "split";
+                      cx.notify();
+                    })
+                    .child(tr("runbook.split_label"))
                 )
                 .when(this.newKind === "agent", (row) =>
                   row
@@ -693,6 +888,161 @@ export default class JamesRunbook extends View {
                     )
                 )
             )
+            // Split Multi-Terminal Builder
+            .when(this.newKind === "split", (form) => {
+              const pickables = [
+                ...customList.filter((c) => c.kind !== "split" && c.kind !== "agent"),
+                ...(this.tab === "space" ? this.detected : []),
+              ];
+              return form.child(
+                v_flex()
+                  .gap(6)
+                  .pt(2)
+                  .children(
+                    this.splitInputs.map((inp, idx) =>
+                      h_flex()
+                        .gap(6)
+                        .items_center()
+                        .child(
+                          Input.new(inp)
+                            .flex_1()
+                            .h(26)
+                            .px(8)
+                            .rounded(6)
+                            .border_1()
+                            .border_color(t.border)
+                            .bg(t.canvas ?? t.background)
+                            .text_size(11.5)
+                            .text_color(t.foreground)
+                        )
+                        .when(this.splitInputs.length > 2, (row) =>
+                          row.child(
+                            h_flex()
+                              .id(`rb-split-rm-${idx}`)
+                              .w(24)
+                              .h(24)
+                              .rounded(5)
+                              .items_center()
+                              .justify_center()
+                              .cursor_pointer()
+                              .hover((s) => s.bg(t.surface))
+                              .on_mouse_down("left", (_ev, cx) => {
+                                cx.stop_propagation();
+                                this.removeSplitSlot(idx, cx);
+                              })
+                              .child(svg(ICON.close).size(11).text_color(t.dim))
+                          )
+                        )
+                    )
+                  )
+                  .child(
+                    h_flex()
+                      .gap(6)
+                      .items_center()
+                      .flex_wrap()
+                      .child(
+                        h_flex()
+                          .id("rb-split-add-slot")
+                          .h(22)
+                          .px(8)
+                          .gap(4)
+                          .rounded(5)
+                          .items_center()
+                          .cursor_pointer()
+                          .border_1()
+                          .border_color(t.border)
+                          .bg(t.raised)
+                          .text_size(10.5)
+                          .text_color(t.foreground)
+                          .hover((s) => s.bg(t.hover))
+                          .on_mouse_down("left", (_ev, cx) => {
+                            cx.stop_propagation();
+                            this.addSplitSlot("", cx);
+                          })
+                          .child(svg(ICON.plus).size(10).text_color(t.accent))
+                          .child(div().child(tr("runbook.add_terminal")))
+                      )
+                      .child(div().flex_1())
+                      .child(
+                        h_flex()
+                          .id("rb-split-dir-right")
+                          .h(22)
+                          .px(7)
+                          .rounded(5)
+                          .items_center()
+                          .cursor_pointer()
+                          .border_1()
+                          .border_color(this.splitDir === "right" ? t.accent : t.border)
+                          .bg(this.splitDir === "right" ? t.selected : t.raised)
+                          .text_size(10.5)
+                          .text_color(this.splitDir === "right" ? t.foreground : t.muted)
+                          .on_mouse_down("left", (_ev, cx) => {
+                            cx.stop_propagation();
+                            this.splitDir = "right";
+                            cx.notify();
+                          })
+                          .child("→")
+                      )
+                      .child(
+                        h_flex()
+                          .id("rb-split-dir-down")
+                          .h(22)
+                          .px(7)
+                          .rounded(5)
+                          .items_center()
+                          .cursor_pointer()
+                          .border_1()
+                          .border_color(this.splitDir === "down" ? t.accent : t.border)
+                          .bg(this.splitDir === "down" ? t.selected : t.raised)
+                          .text_size(10.5)
+                          .text_color(this.splitDir === "down" ? t.foreground : t.muted)
+                          .on_mouse_down("left", (_ev, cx) => {
+                            cx.stop_propagation();
+                            this.splitDir = "down";
+                            cx.notify();
+                          })
+                          .child("↓")
+                      )
+                  )
+                  .when(pickables.length > 0, (box) =>
+                    box.child(
+                      h_flex()
+                        .gap(4)
+                        .flex_wrap()
+                        .pt(2)
+                        .child(
+                          div()
+                            .w_full()
+                            .text_size(10)
+                            .text_color(t.dim)
+                            .child(tr("runbook.pick_hint"))
+                        )
+                        .children(
+                          pickables.slice(0, 12).map((p) =>
+                            h_flex()
+                              .id(`rb-pick-${p.id}`)
+                              .h(20)
+                              .px(6)
+                              .rounded(4)
+                              .items_center()
+                              .cursor_pointer()
+                              .border_1()
+                              .border_color(t.border)
+                              .bg(t.background)
+                              .text_size(10)
+                              .text_color(t.muted)
+                              .hover((s) => s.bg(t.hover).text_color(t.foreground))
+                              .on_mouse_down("left", (_ev, cx) => {
+                                cx.stop_propagation();
+                                this.pickForSplit(p.cmd, cx);
+                              })
+                              .child(`+ ${p.name}`)
+                          )
+                        )
+                    )
+                  )
+              );
+            })
             .child(
               h_flex()
                 .justify_end()
@@ -710,6 +1060,7 @@ export default class JamesRunbook extends View {
                     .on_mouse_down("left", (_ev, cx) => {
                       cx.stop_propagation();
                       this.adding = false;
+                      this.editingId = null;
                       cx.notify();
                     })
                     .child(tr("runbook.cancel"))
