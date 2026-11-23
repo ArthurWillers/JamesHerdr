@@ -335,7 +335,8 @@ export default class ProjectsSidebar extends View {
       centerActive === "todos-page" ||
       centerActive === "runbook-page" ||
       centerActive === "notes-page" ||
-      centerActive === "routines-page";
+      centerActive === "routines-page" ||
+      centerActive === "github-page";
 
     const leads = leadPanes(ps);
     const agentsByTab = new Map();
@@ -403,6 +404,14 @@ export default class ProjectsSidebar extends View {
       : [];
     const failedRoutinesCount = routinesList.filter((r) => r.enabled && r.lastStatus === "error").length;
     const activeRoutinesCount = routinesList.filter((r) => r.enabled).length;
+    const ghCache = shared("james-github.cache") ?? {};
+    const ghMine = Array.isArray(ghCache.mine) ? ghCache.mine : [];
+    const ghReviews = Array.isArray(ghCache.reviews) ? ghCache.reviews : [];
+    const ghFailingCount = [...ghMine, ...ghReviews].filter(
+      (p) => p.ciState === "FAILURE" || p.ciState === "ERROR"
+    ).length;
+    const ghBadgeCount = ghFailingCount > 0 ? ghFailingCount : ghReviews.length;
+    const ghBadgeColor = ghFailingCount > 0 ? "#f14c4c" : t.accent;
 
     const dockItem = (pageId, iconPath, label, badgeCount, badgeColor) => {
       const active = centerActive === pageId;
@@ -507,6 +516,15 @@ export default class ProjectsSidebar extends View {
           tr("routines.title"),
           failedRoutinesCount > 0 ? failedRoutinesCount : activeRoutinesCount,
           failedRoutinesCount > 0 ? "#f14c4c" : t.accent
+        )
+      )
+      .child(
+        dockItem(
+          "github-page",
+          "mods/activity-bar/icons/github.svg",
+          tr("gh.title"),
+          ghBadgeCount,
+          ghBadgeColor
         )
       );
 

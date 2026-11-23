@@ -14,6 +14,7 @@ const ICON = {
   notes: "mods/activity-bar/icons/notes.svg",
   dashboard: "mods/activity-bar/icons/dashboard.svg",
   clock: "mods/activity-bar/icons/routines.svg",
+  github: "mods/activity-bar/icons/github.svg",
   sliders: "mods/source-control/icons/sliders.svg",
   sparkles: "mods/source-control/icons/sparkles.svg",
   server: "mods/james-chrome/server.svg",
@@ -891,6 +892,31 @@ export default class JamesDashboard extends View {
                                   : tr("routines.active_count", { count: active }),
                                 failed > 0 ? "#f14c4c" : active > 0 ? t.accent : t.dim,
                                 () => this.openGeneralPage("routines-page")
+                              );
+                            })()
+                          )
+                          .child(
+                            (() => {
+                              const gh = shared("james-github.cache") ?? {};
+                              const mine = Array.isArray(gh.mine) ? gh.mine : [];
+                              const revs = Array.isArray(gh.reviews) ? gh.reviews : [];
+                              const failing = [...mine, ...revs].filter(
+                                (p) => p.ciState === "FAILURE" || p.ciState === "ERROR"
+                              ).length;
+                              const total = mine.length + revs.length;
+                              return appRow(
+                                "dash-app-github",
+                                ICON.github,
+                                tr("gh.title"),
+                                failing > 0
+                                  ? `${failing} ${tr("gh.ci_fail").toLowerCase()}`
+                                  : revs.length > 0
+                                    ? `${revs.length} ${tr("gh.reviews_short")}`
+                                    : total > 0
+                                      ? tr("dash.open_count", { count: total })
+                                      : "→",
+                                failing > 0 ? "#f14c4c" : revs.length > 0 ? t.accent : t.dim,
+                                () => this.openGeneralPage("github-page")
                               );
                             })()
                           )
