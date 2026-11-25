@@ -168,9 +168,11 @@ export default class JamesChanges extends View {
     this.allBranches = localStorage.getItem("sc.allBranches") !== "0";
 
     this.commitHeight = shared("james-changes.commitHeight") ?? 74;
-    this.caps = { staged: 150, work: 210 };
+    this.caps = { staged: 160, work: 220 };
     try {
-      Object.assign(this.caps, JSON.parse(localStorage.getItem("sc.caps") ?? "{}"));
+      const saved = JSON.parse(localStorage.getItem("sc.caps") ?? "{}");
+      if (saved.staged >= 84) this.caps.staged = saved.staged;
+      if (saved.work >= 84) this.caps.work = saved.work;
     } catch {}
     this.listHeight = null;
     this.drag = null;
@@ -1025,8 +1027,9 @@ export default class JamesChanges extends View {
 
   endDrag(cx) {
     if (!this.drag) return;
+    const moved = this.drag.moved;
     this.drag = null;
-    localStorage.setItem("sc.caps", JSON.stringify(this.caps));
+    if (moved) localStorage.setItem("sc.caps", JSON.stringify(this.caps));
     cx.notify();
   }
 
@@ -1706,39 +1709,40 @@ export default class JamesChanges extends View {
       return [head, body];
     }
 
-    const height = Math.min(cap ?? 200, Math.max(1, list.length) * 28 + 2);
-    this.used += 30 + height + 10;
+    const height = Math.min(cap ?? 220, Math.max(1, list.length) * 28 + 2);
+    const showGrip = list.length > 1;
+    this.used += 30 + height + (showGrip ? 10 : 2);
 
-    const grip = div()
-      .id(`grip-${id}`)
-      .h(6)
-      .flex_none()
-      .flex()
-      .items_center()
-      .justify_center()
-      .rounded(3)
-      .cursor_row_resize()
-      .hover((s) => s.bg(t.hover))
-      .on_mouse_down("left", (e, cx) => {
-        cx.stop_propagation();
-        this.drag = {
-          id,
-          y: e.position.y,
-          start: height,
-          max: Math.min(
-            Math.max(1, list.length) * 28 + 2,
-            height + Math.max(0, this.spare ?? 260)
-          ),
-        };
-        cx.notify();
-      })
-      .child(
-        div()
-          .w(28)
-          .h(2)
-          .rounded(1)
-          .bg(this.drag?.id === id ? t.accent : t.border)
-      );
+    const grip = showGrip
+      ? div()
+          .id(`grip-${id}`)
+          .h(6)
+          .flex_none()
+          .flex()
+          .items_center()
+          .justify_center()
+          .rounded(3)
+          .cursor_row_resize()
+          .hover((s) => s.bg(t.hover))
+          .on_mouse_down("left", (e, cx) => {
+            cx.stop_propagation();
+            this.drag = {
+              id,
+              y: e.position.y,
+              start: height,
+              moved: false,
+              max: Math.max(height, height + Math.max(0, this.spare ?? 260)),
+            };
+            cx.notify();
+          })
+          .child(
+            div()
+              .w(28)
+              .h(2)
+              .rounded(1)
+              .bg(this.drag?.id === id ? t.accent : t.border)
+          )
+      : null;
 
     return [
       head,
@@ -1749,7 +1753,7 @@ export default class JamesChanges extends View {
         .overflow_y_scrollbar()
         .gap(2)
         .children(list),
-      grip,
+      ...(grip ? [grip] : []),
     ];
   }
 
@@ -2399,8 +2403,11 @@ export default class JamesChanges extends View {
         }
         if (this.drag) {
           const d = this.drag;
+          const delta = e.position.y - d.y;
+          if (!d.moved && Math.abs(delta) < 3) return;
+          d.moved = true;
           const next = Math.round(
-            Math.min(d.max, Math.max(30, d.start + e.position.y - d.y))
+            Math.min(d.max, Math.max(58, d.start + delta))
           );
           if (next !== this.caps[d.id]) {
             this.caps[d.id] = next;
