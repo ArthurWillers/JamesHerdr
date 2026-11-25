@@ -5,6 +5,7 @@ Personal [Herdr](https://herdr.dev) workspace layout, mods, and [Omarchy](https:
 ## Features
 
 - **`better-sidebar` (customized)**: Based on `munza/herdr-mods/better-sidebar`, extended with the JamesHerdr Cockpit dock (`Dashboard`, `To-do`, `Runbook`, `Notes`, `Routines`, `GitHub` with live badges), collapsible spaces (click any space row to fold/unfold), background routines ticker, `~/` home space creation, and a compact footer opening **JamesHerdr Settings**.
+- **`better-files` (customized)**: Based on `munza/herdr-mods/better-files`, adding a one-click whole-file `Copy` button, automatic native text selection on clean files, and a `Select` toggle for modified files with git gutter marks.
 - **`james-dashboard`**: Cockpit-style agent-agnostic General Overview with live agent status counters, `Needs You` spotlight, `Apps` quick-launcher, General to-dos with priority picker, Global runbook shortcuts, and live General notes.
 - **`james-todos`**: Per-Space and General to-do list with priorities (`High`/`Medium`/`Low`), expandable task notes, move between Space/General, filters, and 1-click launch with Default Agent.
 - **`james-runbook`**: Per-Space and General command runbook with automatic script detection (`package.json`, `Makefile`, `Cargo.toml`), Shell / Agent / Split (multi-terminal in one tab) commands, and inline editing.
@@ -19,11 +20,10 @@ Personal [Herdr](https://herdr.dev) workspace layout, mods, and [Omarchy](https:
 
 ## External Mod Prerequisites
 
-JamesHerdr uses three unmodified upstream mods from [munza/herdr-mods](https://github.com/munza/herdr-mods) (not vendored in this repo):
+JamesHerdr uses two unmodified upstream mods from [munza/herdr-mods](https://github.com/munza/herdr-mods) (not vendored in this repo):
 
-- **`better-files`**: File browser, center-tab file viewer, Markdown preview, and external editor launch.
 - **`better-alerts`**: Native Linux/Hyprland desktop notifications (`notify-send` + `hyprctl`) when agents need input or finish.
-- **`better-icons`** *(optional, recommended)*: VS Code Material Icon Theme icons for `better-files` (must be **copied**, not symlinked, into `~/.config/herdr-app/mods/better-icons`).
+- **`better-icons`** *(optional, recommended)*: VS Code Material Icon Theme icons for `better-files` and `source-control` (must be **copied**, not symlinked, into `~/.config/herdr-app/mods/better-icons`).
 
 ## Installation
 
@@ -37,9 +37,8 @@ git clone https://github.com/ArthurWillers/JamesHerdr.git ~/Code/JamesHerdr
 
 ```bash
 git clone --depth 1 --filter=blob:none --sparse https://github.com/munza/herdr-mods.git /tmp/herdr-mods
-git -C /tmp/herdr-mods sparse-checkout set better-files/mods/better-files better-alerts/mods/better-alerts better-icons/mods/better-icons
+git -C /tmp/herdr-mods sparse-checkout set better-alerts/mods/better-alerts better-icons/mods/better-icons
 mkdir -p ~/.config/herdr-app/mods
-cp -r /tmp/herdr-mods/better-files/mods/better-files ~/.config/herdr-app/mods/better-files
 cp -r /tmp/herdr-mods/better-alerts/mods/better-alerts ~/.config/herdr-app/mods/better-alerts
 cp -r /tmp/herdr-mods/better-icons/mods/better-icons ~/.config/herdr-app/mods/better-icons
 rm -rf /tmp/herdr-mods
@@ -76,7 +75,6 @@ Read ~/.config/herdr-app/AGENTS.md, then install and configure the JamesHerdr la
 
 1. Clone https://github.com/ArthurWillers/JamesHerdr.git into ~/Code/JamesHerdr (or pull latest if it already exists).
 2. Install the required upstream mods from https://github.com/munza/herdr-mods into ~/.config/herdr-app/mods/ (by copying, NOT symlinking):
-   - better-files/mods/better-files -> ~/.config/herdr-app/mods/better-files
    - better-alerts/mods/better-alerts -> ~/.config/herdr-app/mods/better-alerts
    - better-icons/mods/better-icons -> ~/.config/herdr-app/mods/better-icons
 3. Create ~/.config/herdr-app/{layouts,mods,themes,scripts} and symlink from ~/Code/JamesHerdr:
