@@ -5,9 +5,11 @@ import { followFileIcons, fileIcon, isLight } from "./file-icons.js";
 import { openDiffTab, diffTabMethods } from "./diff-tab.js";
 import {
   GRAPH_ROW,
+  GRAPH_PAD,
   GRAPH_MAX,
   age,
   laneWidth,
+  laneX,
   laneColor,
   parseGraphLog,
   layoutGraph,
@@ -1842,7 +1844,7 @@ export default class JamesChanges extends View {
 
     const n = this.lanes;
     const L = laneWidth(n);
-    const graphW = Math.min(n * L, GRAPH_MAX);
+    const graphW = Math.min(GRAPH_PAD * 2 + n * L, GRAPH_MAX);
     const limit = this.commitLimit ?? 50;
     const visible = this.commits.slice(0, limit);
     const rows = [];
@@ -1903,14 +1905,14 @@ export default class JamesChanges extends View {
       if (!open) continue;
 
       const railLines = c.below
-        .filter((i) => i * L < graphW)
+        .filter((i) => laneX(i, L) < graphW)
         .map((i) =>
           div()
             .absolute()
-            .left(4 + i * L + L / 2 - 1)
+            .left(4 + laneX(i, L) - 1)
             .top(0)
             .bottom(0)
-            .w(2)
+            .w(1.75)
             .bg(laneColor(t, i))
         );
 
@@ -1928,7 +1930,7 @@ export default class JamesChanges extends View {
             v_flex()
               .ml(4 + graphW + 4)
               .mr(6)
-              .my(3)
+              .py(3)
               .gap(4)
               .child(
                 // Commit details card (auto-sizing, never clipped)
@@ -2151,7 +2153,6 @@ export default class JamesChanges extends View {
       .min_h(0)
       .w_full()
       .overflow_y_scrollbar()
-      .gap(1)
       .children(rows);
   }
 

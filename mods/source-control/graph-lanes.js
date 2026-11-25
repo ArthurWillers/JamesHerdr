@@ -1,7 +1,8 @@
-// Multi-lane commit graph layout and cell renderer, inspired by git-panel & herdr-git-graph.
-import { div } from "gpui-kit";
+// Multi-lane commit graph layout and smooth Bezier cell renderer, adapted from herdr-git-graph.
+import { div, PathBuilder } from "gpui-kit";
 
 export const GRAPH_ROW = 26;
+export const GRAPH_PAD = 4;
 export const GRAPH_MAX = 112;
 
 const UNITS = { minute: "m", hour: "h", day: "d", week: "w", month: "mo", year: "y" };
@@ -11,7 +12,8 @@ export function age(when) {
   return !m ? when ?? "" : m[2] === "second" ? "now" : m[1] + UNITS[m[2]];
 }
 
-export const laneWidth = (n) => (n <= 7 ? 12 : Math.max(6, Math.floor(84 / n)));
+export const laneWidth = (n) => (n <= 7 ? 12 : Math.max(8, Math.floor(84 / n)));
+export const laneX = (lane, L) => GRAPH_PAD + lane * L + L / 2;
 export const laneColor = (t, i) => [t.ansi4, t.ansi2, t.ansi5, t.ansi3, t.ansi6, t.ansi1][i % 6];
 
 // `%D` with --decorate=full: refs/heads/x, refs/remotes/o/x, tag: refs/tags/x, HEAD -> refs/heads/x, HEAD.
@@ -59,7 +61,7 @@ export function parseGraphLog(stdout) {
     });
 }
 
-// Assigns a lane column to every commit and records crossing/forking/merging edges.
+// Lays commits out on lanes, producing Bezier segments [fromLane, fromY, toLane, toY, colorLane].
 export function layoutGraph(commits) {
   const lanes = [];
   const free = () => {
@@ -68,113 +70,83 @@ export function layoutGraph(commits) {
   };
   let width = 1;
   for (const c of commits) {
-    const above = lanes.flatMap((h, i) => (h ? [i] : []));
-    let col = lanes.indexOf(c.fullHash);
-    c.tip = col < 0;
-    if (col < 0) col = free();
-    c.col = col;
-    c.through = [];
-    c.into = [];
-    c.out = [];
-    for (const i of above) {
-      if (lanes[i] !== c.fullHash) c.through.push(i);
-      else if (i !== col) c.into.push(i);
+    const before = lanes.slice();
+    const segments = [];
+    let lane = before.indexOf(c.fullHash);
+    if (lane < 0) {
+      lane = free();
+      lanes[lane] = c.fullHash;
     }
-    for (const i of c.into) lanes[i] = null;
-    lanes[col] = c.parents[0] ?? null;
-    for (const p of c.parents.slice(1)) {
-      let k = lanes.indexOf(p);
-      const fresh = k < 0;
-      if (fresh) {
-        k = free();
-        lanes[k] = p;
+    before.forEach((hash, j) => {
+      if (!hash) return;
+      if (hash === c.fullHash) {
+        segments.push([j, 0, lane, 0.5, j]);
+        if (j !== lane) lanes[j] = null;
+      } else {
+        segments.push([j, 0, j, 1, j]);
       }
-      c.out.push({ k, fresh });
+    });
+    const [first, ...rest] = c.parents;
+    lanes[lane] = first ?? null;
+    if (first) segments.push([lane, 0.5, lane, 1, lane]);
+    for (const parent of rest) {
+      let k = lanes.indexOf(parent);
+      if (k < 0) {
+        k = free();
+        lanes[k] = parent;
+      }
+      segments.push([lane, 0.5, k, 1, k]);
     }
+    width = Math.max(width, before.length, lanes.length);
     while (lanes.length && lanes.at(-1) === null) lanes.pop();
+    c.col = lane;
+    c.segments = segments;
     c.below = lanes.flatMap((h, i) => (h ? [i] : []));
-    width = Math.max(
-      width,
-      col + 1,
-      lanes.length,
-      ...c.through.map((i) => i + 1),
-      ...c.into.map((i) => i + 1)
-    );
   }
   return width;
 }
 
-// One row of the commit graph: 2px lane lines and rounded fork/merge corners.
+// One row of the commit graph: smooth cubic-bezier paths + crisp ring/dot (herdr-git-graph style).
 export function graphCell(c, n, L, t, fill) {
-  const x = (i) => i * L + L / 2;
-  const mid = GRAPH_ROW / 2;
-  const R = L / 2;
-  const col = x(c.col);
-  const line = (i, top, h) =>
-    div().absolute().left(x(i) - 1).top(top).w(2).h(h).bg(laneColor(t, i));
-  const flat = (from, to, i) =>
-    div()
-      .absolute()
-      .left(Math.min(from, to))
-      .top(mid - 1)
-      .w(Math.abs(to - from))
-      .h(2)
-      .bg(laneColor(t, i));
-  const corner = (i, down) => {
-    const right = x(i) > col;
-    const e = div()
-      .absolute()
-      .w(R + 2)
-      .h(down ? GRAPH_ROW - mid + 1 : mid + 1)
-      .top(down ? mid - 1 : 0)
-      .left(right ? x(i) - R - 1 : x(i) - 1)
-      .border_color(laneColor(t, i))
-      .when(down, (el) => el.border_t(2))
-      .when(!down, (el) => el.border_b(2));
-    if (right) {
-      return e
-        .border_r(2)
-        .when(down, (el) => el.rounded_tr(R + 1))
-        .when(!down, (el) => el.rounded_br(R + 1));
+  const x = (lane) => laneX(lane, L);
+  const y = (v) => v * GRAPH_ROW;
+  const paths = new Map();
+
+  for (const [a, ya, b, yb, colorIdx] of c.segments ?? []) {
+    const color = laneColor(t, colorIdx);
+    let p = paths.get(color)?.p ?? PathBuilder.stroke(1.75);
+    p = p.move_to(x(a), y(ya));
+    if (a === b) {
+      p = p.line_to(x(b), y(yb));
+    } else {
+      const mid = (y(ya) + y(yb)) / 2;
+      p = p.cubic_bezier_to(x(b), y(yb), x(a), mid, x(b), mid);
     }
-    return e
-      .border_l(2)
-      .when(down, (el) => el.rounded_tl(R + 1))
-      .when(!down, (el) => el.rounded_bl(R + 1));
-  };
-  const edge = (i) => (x(i) > col ? x(i) - R - 1 : x(i) + R + 1);
-
-  const parts = c.through.map((i) => line(i, 0, GRAPH_ROW));
-  for (const j of c.into) parts.push(flat(col, edge(j), j), corner(j, false));
-  for (const { k, fresh } of c.out) {
-    parts.push(...(fresh ? [flat(col, edge(k), k), corner(k, true)] : [flat(col, x(k), k)]));
+    paths.set(color, { p, color });
   }
-  if (!c.tip) parts.push(line(c.col, 0, mid));
-  if (c.parents.length) parts.push(line(c.col, mid, GRAPH_ROW - mid));
 
-  const tint = laneColor(t, c.col);
-  const dot = c.isHead
-    ? div()
-        .size(12)
-        .rounded_full()
-        .border_2()
-        .border_color(tint)
-        .bg(fill)
-        .flex()
-        .items_center()
-        .justify_center()
-        .child(div().size(4).rounded_full().bg(tint))
-    : c.parents.length > 1
-    ? div().size(8).rounded_full().border_2().border_color(tint).bg(fill)
-    : div().size(8).rounded_full().bg(tint);
-  const s = c.isHead ? 12 : 8;
-  parts.push(dot.absolute().left(col - s / 2).top(mid - s / 2));
+  const color = laneColor(t, c.col);
+  const ring = c.isHead || c.parents.length > 1;
+  const dot = div()
+    .absolute()
+    .left(x(c.col) - 4)
+    .top(GRAPH_ROW / 2 - 4)
+    .size(8)
+    .rounded(4)
+    .when(ring, (e) => e.bg(fill).border_2().border_color(color))
+    .when(!ring, (e) => e.bg(color));
 
+  const w = Math.min(GRAPH_PAD * 2 + n * L, GRAPH_MAX);
   return div()
     .relative()
     .flex_none()
-    .w(Math.min(n * L, GRAPH_MAX))
+    .w(w)
     .h(GRAPH_ROW)
     .overflow_hidden()
-    .children(parts);
+    .children(
+      [...paths.values()].map(({ p, color: stroke }) =>
+        window.paint_path(p.build(), stroke).absolute().top(0).left(0).size_full()
+      )
+    )
+    .child(dot);
 }
