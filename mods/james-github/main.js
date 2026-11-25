@@ -27,6 +27,7 @@ const ICON = {
 };
 
 const CACHE_KEY = "james-github.cache";
+const IGNORED_KEY = "james-github.ignored";
 
 const GQL_QUERY = `{
   viewer { login }
@@ -197,6 +198,19 @@ export default class JamesGithub extends View {
       : { viewer: "", mine: [], reviews: [], issues: [], repoCi: [], fetchedAt: 0 };
   }
 
+  getIgnored() {
+    const raw = shared(IGNORED_KEY);
+    return new Set(Array.isArray(raw) ? raw : []);
+  }
+
+  toggleIgnore(id, cx) {
+    const set = this.getIgnored();
+    if (set.has(id)) set.delete(id);
+    else set.add(id);
+    setShared(IGNORED_KEY, [...set]);
+    cx.notify();
+  }
+
   fetchAll(cx) {
     if (this.loading) return;
     this.loading = true;
@@ -326,6 +340,7 @@ export default class JamesGithub extends View {
     }
     allPrs.sort((a, b) => (b.updatedAt || "").localeCompare(a.updatedAt || ""));
 
+    const ignoredSet = this.getIgnored();
     const prFailCount = allPrs.filter((p) => p.ciState === "FAILURE" || p.ciState === "ERROR").length;
     const ciFailCount = repoCi.filter((c) => c.state === "FAILURE" || c.state === "ERROR").length;
 
@@ -881,6 +896,29 @@ export default class JamesGithub extends View {
                           )
                       )
                       .child(
+                        (() => {
+                          const muted = ignoredSet.has(pr.id);
+                          return h_flex()
+                            .id(`gh-ignore-${pr.id}`)
+                            .h(28)
+                            .px(8)
+                            .rounded(6)
+                            .items_center()
+                            .cursor_pointer()
+                            .border_1()
+                            .border_color(muted ? t.accent : t.border)
+                            .bg(muted ? t.selected : t.background)
+                            .text_size(11)
+                            .text_color(muted ? t.foreground : t.dim)
+                            .hover((s) => s.bg(t.hover).text_color(t.foreground))
+                            .on_mouse_down("left", (_ev, cx) => {
+                              cx.stop_propagation();
+                              this.toggleIgnore(pr.id, cx);
+                            })
+                            .child(muted ? tr("gh.unignore") : tr("gh.ignore"));
+                        })()
+                      )
+                      .child(
                         h_flex()
                           .id(`gh-open-${pr.id}`)
                           .h(28)
@@ -1100,6 +1138,29 @@ export default class JamesGithub extends View {
                             .child(svg(ICON.sparkles).size(11).text_color(t.accent))
                             .child(div().child(tr("gh.ask_fix_ci")))
                         )
+                      )
+                      .child(
+                        (() => {
+                          const muted = ignoredSet.has(ci.id);
+                          return h_flex()
+                            .id(`gh-ci-ignore-${ci.id}`)
+                            .h(28)
+                            .px(8)
+                            .rounded(6)
+                            .items_center()
+                            .cursor_pointer()
+                            .border_1()
+                            .border_color(muted ? t.accent : t.border)
+                            .bg(muted ? t.selected : t.background)
+                            .text_size(11)
+                            .text_color(muted ? t.foreground : t.dim)
+                            .hover((s) => s.bg(t.hover).text_color(t.foreground))
+                            .on_mouse_down("left", (_ev, cx) => {
+                              cx.stop_propagation();
+                              this.toggleIgnore(ci.id, cx);
+                            })
+                            .child(muted ? tr("gh.unignore") : tr("gh.ignore"));
+                        })()
                       )
                       .child(
                         h_flex()

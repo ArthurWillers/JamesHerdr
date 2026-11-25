@@ -898,9 +898,10 @@ export default class JamesDashboard extends View {
                           .child(
                             (() => {
                               const gh = shared("james-github.cache") ?? {};
-                              const mine = Array.isArray(gh.mine) ? gh.mine : [];
-                              const revs = Array.isArray(gh.reviews) ? gh.reviews : [];
-                              const repoCi = Array.isArray(gh.repoCi) ? gh.repoCi : [];
+                              const ghIgnored = new Set(Array.isArray(shared("james-github.ignored")) ? shared("james-github.ignored") : []);
+                              const mine = (Array.isArray(gh.mine) ? gh.mine : []).filter((p) => !ghIgnored.has(p.id));
+                              const revs = (Array.isArray(gh.reviews) ? gh.reviews : []).filter((p) => !ghIgnored.has(p.id));
+                              const repoCi = (Array.isArray(gh.repoCi) ? gh.repoCi : []).filter((p) => !ghIgnored.has(p.id));
                               const failing = [...mine, ...revs, ...repoCi].filter(
                                 (p) => (p.ciState ?? p.state) === "FAILURE" || (p.ciState ?? p.state) === "ERROR"
                               ).length;

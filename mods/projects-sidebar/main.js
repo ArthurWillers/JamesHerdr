@@ -405,9 +405,10 @@ export default class ProjectsSidebar extends View {
     const failedRoutinesCount = routinesList.filter((r) => r.enabled && r.lastStatus === "error").length;
     const activeRoutinesCount = routinesList.filter((r) => r.enabled).length;
     const ghCache = shared("james-github.cache") ?? {};
-    const ghMine = Array.isArray(ghCache.mine) ? ghCache.mine : [];
-    const ghReviews = Array.isArray(ghCache.reviews) ? ghCache.reviews : [];
-    const ghRepoCi = Array.isArray(ghCache.repoCi) ? ghCache.repoCi : [];
+    const ghIgnored = new Set(Array.isArray(shared("james-github.ignored")) ? shared("james-github.ignored") : []);
+    const ghMine = (Array.isArray(ghCache.mine) ? ghCache.mine : []).filter((p) => !ghIgnored.has(p.id));
+    const ghReviews = (Array.isArray(ghCache.reviews) ? ghCache.reviews : []).filter((p) => !ghIgnored.has(p.id));
+    const ghRepoCi = (Array.isArray(ghCache.repoCi) ? ghCache.repoCi : []).filter((p) => !ghIgnored.has(p.id));
     const ghFailingCount = [...ghMine, ...ghReviews, ...ghRepoCi].filter(
       (p) => (p.ciState ?? p.state) === "FAILURE" || (p.ciState ?? p.state) === "ERROR"
     ).length;
