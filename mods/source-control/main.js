@@ -1,13 +1,23 @@
-import { View, div, svg } from "gpui-kit";
+import { View, div, svg, image } from "gpui-kit";
 import { tr } from "./i18n.js";
+import { openInBetterFiles } from "./open-files.js";
+import { followFileIcons, fileIcon, isLight } from "./file-icons.js";
+import { openDiffTab, diffTabMethods } from "./diff-tab.js";
+import {
+  GRAPH_ROW,
+  GRAPH_MAX,
+  age,
+  laneWidth,
+  laneColor,
+  parseGraphLog,
+  layoutGraph,
+  graphCell,
+} from "./graph-lanes.js";
 import {
   v_flex,
   h_flex,
   TextareaState,
   Textarea,
-  Scrollbar,
-  ScrollHandle,
-  v_virtual_list,
   Popup,
 } from "gpui-base";
 import {
@@ -18,13 +28,12 @@ import {
   readTextFile,
   watchFolder,
   theme,
-  settings,
   shared,
   setShared,
   openOverlay,
   checking,
   notify,
-  run,
+  props,
 } from "herdr";
 
 const DEFAULT_PROMPT =
@@ -40,6 +49,9 @@ const FIXED_RULES =
   "Rules (mandatory):\n" +
   "- Output ONLY the raw commit message text (no markdown code fences, no commentary, no intro/outro).\n" +
   "- Do NOT run any commands, tools, or modify any files.";
+
+const MAX_FILES = 1000;
+const MAX_COMMITS = 100;
 
 const ICON = {
   branch: "mods/workspace-chrome/branch.svg",
@@ -58,6 +70,11 @@ const ICON = {
   cloud: "mods/source-control/icons/cloud.svg",
   sliders: "mods/source-control/icons/sliders.svg",
   file: "mods/workspace-chrome/file-text.svg",
+  diff: "mods/source-control/icons/diff.svg",
+  fileFallback: "mods/source-control/icons/file.svg",
+  folder: "mods/source-control/icons/folder.svg",
+  list: "mods/source-control/icons/list.svg",
+  listTree: "mods/source-control/icons/list-tree.svg",
 };
 
 const GIT_STATUS_KEYS = {
@@ -70,42 +87,21 @@ const GIT_STATUS_KEYS = {
   T: "sc.status_T",
 };
 
-const gitStatusLabel = (code) => (GIT_STATUS_KEYS[code] ? tr(GIT_STATUS_KEYS[code]) : code);
+const gitStatusLabel = (code) =>
+  GIT_STATUS_KEYS[code] ? tr(GIT_STATUS_KEYS[code]) : code;
+
+const statusColor = (t, code) =>
+  code === "A" || code === "U"
+    ? t.ansi2
+    : code === "D"
+    ? t.ansi1
+    : t.ansi3;
 
 const COMMIT_MODES = [
   { id: "commit", labelKey: "sc.commit" },
   { id: "push", labelKey: "sc.commit_push" },
   { id: "amend", labelKey: "sc.commit_amend" },
 ];
-
-const tipState = { id: null };
-
-function tipAbove(id, label, triggerEl, t, anchor = "bottom_center") {
-  const trigger = triggerEl.on_hover((hovered, cx) => {
-    const next = hovered ? id : tipState.id === id ? null : tipState.id;
-    if (next !== tipState.id) {
-      tipState.id = next;
-      cx.notify();
-    }
-  });
-  return Popup.new(`tip-${id}`, trigger)
-    .anchor(anchor)
-    .when(tipState.id === id, (el) =>
-      el.content(
-        div()
-          .px(8)
-          .py(4)
-          .mb(4)
-          .rounded(6)
-          .border_1()
-          .border_color(t.border)
-          .bg(t.popover ?? t.surface)
-          .text_size(11.5)
-          .text_color(t.foreground)
-          .child(label)
-      )
-    );
-}
 
 function location() {
   const space = spaces().find((s) => s.active);
@@ -136,72 +132,6 @@ const READ = [
 const countLines = (text) =>
   text ? text.split("\n").length - Number(text.endsWith("\n")) : 0;
 
-const untab = (text) =>
-  text.replace(/[^\t]*\t/g, (s) =>
-    s.slice(0, -1).padEnd(s.length - 1 - ((s.length - 1) % 4) + 4)
-  );
-
-function diffRows(lines) {
-  let old = 0;
-  let next = 0;
-  const out = [];
-  for (const line of lines) {
-    if (
-      line.startsWith("diff --git ") ||
-      line.startsWith("index ") ||
-      line.startsWith("new file mode ") ||
-      line.startsWith("deleted file mode ") ||
-      line.startsWith("--- ") ||
-      line.startsWith("+++ ")
-    ) {
-      continue;
-    }
-    const match = /^@@ -(\d+)(?:,\d+)? \+(\d+)/.exec(line);
-    if (match) {
-      old = +match[1];
-      next = +match[2];
-      out.push({ kind: "@", text: line });
-      continue;
-    }
-    const kind = line[0];
-    if (kind === "-") {
-      out.push({ kind, number: old++, text: untab(line.slice(1)) || " " });
-    } else if (kind === "+") {
-      out.push({ kind, number: next++, text: untab(line.slice(1)) || " " });
-    } else if (kind === " ") {
-      old++;
-      out.push({ kind, number: next++, text: untab(line.slice(1)) || " " });
-    } else {
-      out.push({ kind: "", text: line });
-    }
-  }
-  return out;
-}
-
-function parseRefs(rawDecorations) {
-  if (!rawDecorations || !rawDecorations.trim()) return [];
-  const parts = rawDecorations
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
-  const refs = [];
-  for (const part of parts) {
-    if (part === "origin/HEAD" || part.startsWith("origin/HEAD ->")) continue;
-    if (part.startsWith("HEAD -> ")) {
-      refs.push({ name: part.slice(8).trim(), kind: "head" });
-    } else if (part === "HEAD") {
-      refs.push({ name: "HEAD", kind: "head" });
-    } else if (part.startsWith("tag: ")) {
-      refs.push({ name: part.slice(5).trim(), kind: "tag" });
-    } else if (part.includes("/")) {
-      refs.push({ name: part, kind: "remote" });
-    } else {
-      refs.push({ name: part, kind: "local" });
-    }
-  }
-  return refs;
-}
-
 function cleanAiOutput(raw) {
   let text = (raw ?? "").trim();
   const fence = /^```(?:text|markdown|gitcommit|commit)?\s*\n([\s\S]*?)\n```$/i.exec(
@@ -213,44 +143,48 @@ function cleanAiOutput(raw) {
 
 export default class JamesChanges extends View {
   init(_props, cx) {
+    const p = props() ?? _props ?? {};
+    if (p.mode === "diff") {
+      this.initDiffTab(p, cx);
+      return;
+    }
+
     this.staged = [];
     this.unstaged = [];
     this.commits = [];
-    this.commitFiles = {}; // hash -> [{ path, status, add, del }]
+    this.lanes = 1;
+    this.commitFiles = {}; // fullHash -> [{ path, status, add, del }]
     this.expandedCommit = null;
     this.expandedBodyHashes = new Set();
-    this.rows = [];
-    this.diffWidth = 300;
     this.branch = "";
     this.ahead = 0;
     this.behind = 0;
     this.hasUpstream = false;
 
-    this.foldStaged = false;
-    this.foldUnstaged = false;
-    this.foldGraphSection = false;
+    this.collapsed = new Set();
+    this.tree = localStorage.getItem("sc.tree") === "1";
+    this.allBranches = localStorage.getItem("sc.allBranches") !== "0";
 
-    this.sectionsHeight = 0;
-    this.commitHeight = shared("james-changes.commitHeight") ?? 76;
-    this.graphHeight = shared("james-changes.graphHeight") ?? 220;
-    this.diffHeight = shared("james-changes.diffHeight") ?? 210;
-
+    this.commitHeight = shared("james-changes.commitHeight") ?? 74;
+    this.caps = { staged: 150, work: 210 };
+    try {
+      Object.assign(this.caps, JSON.parse(localStorage.getItem("sc.caps") ?? "{}"));
+    } catch {}
+    this.listHeight = null;
+    this.drag = null;
     this.resizingCommit = null;
-    this.resizingGraph = null;
-    this.resizingDiff = null;
     this.hoverCommitResizer = false;
-    this.hoverGraphResizer = false;
-    this.hoverDiffResizer = false;
 
+    this.hot = null;
+    this.wheelAt = 0;
+    this.asking = null; // { text, actions: [args[]] }
     this.commitMode = "commit"; // "commit" | "push" | "amend"
     this.showCommitMenu = false;
     this.generating = false;
     this.message = "";
     this.open = null; // { path, staged, commit? }
+    this.lastOpened = null;
     this.handle = cx.focus_handle();
-    this.stagedScroll = ScrollHandle.new();
-    this.filesScroll = ScrollHandle.new();
-    this.graphScroll = ScrollHandle.new();
 
     this.input = TextareaState.new({
       placeholder: tr("sc.composer_placeholder"),
@@ -271,8 +205,9 @@ export default class JamesChanges extends View {
     });
 
     if (checking()) return;
+    followFileIcons(this, cx);
     this.refresh(cx);
-    cx.timer.every(10000, (cx) => this.refresh(cx));
+    cx.timer.every(10000, (timerCx) => this.refresh(timerCx));
   }
 
   watch(root, cx) {
@@ -291,7 +226,11 @@ export default class JamesChanges extends View {
   }
 
   refresh(cx) {
-    if (this.loading || this.busy) return;
+    if (this.loading) {
+      this.dirty = true;
+      return;
+    }
+    if (this.busy) return;
     const { cwd, on } = location();
     const context = key();
     if (context !== this.context) {
@@ -300,10 +239,12 @@ export default class JamesChanges extends View {
       this.staged = [];
       this.unstaged = [];
       this.commits = [];
+      this.lanes = 1;
       this.commitFiles = {};
       this.expandedCommit = null;
       this.open = null;
-      this.setLines([]);
+      this.lastOpened = null;
+      this.asking = null;
       this.message = "";
       this.input.set_value("");
       this.error = null;
@@ -324,7 +265,7 @@ export default class JamesChanges extends View {
           this.staged = [];
           this.unstaged = [];
           this.commits = [];
-          this.setLines([]);
+          this.lanes = 1;
           this.open = null;
           this.error = tr("sc.not_git");
           return;
@@ -332,7 +273,17 @@ export default class JamesChanges extends View {
         const root = top.stdout.trim();
         const git = (args) => exec("git", [...READ, ...args], { cwd: root, on });
 
-        const [status, head, branchRes, upstreamRes] = await Promise.all([
+        const logArgs = [
+          "log",
+          "--topo-order",
+          "--decorate=full",
+          "-n",
+          String(MAX_COMMITS),
+          ...(this.allBranches ? ["--branches", "--remotes", "--tags", "HEAD"] : ["HEAD"]),
+          "--format=%H%x1f%P%x1f%h%x1f%an%x1f%ar%x1f%D%x1f%s%x1f%b%x1e",
+        ];
+
+        const [status, head, branchRes, upstreamRes, logRes] = await Promise.all([
           git([
             "status",
             "--porcelain=v1",
@@ -343,6 +294,7 @@ export default class JamesChanges extends View {
           git(["rev-parse", "--verify", "HEAD"]),
           git(["symbolic-ref", "--short", "HEAD"]),
           git(["rev-list", "--left-right", "--count", "HEAD...@{upstream}"]),
+          git(logArgs),
         ]);
 
         if (status.code !== 0) throw new Error(status.stderr);
@@ -388,7 +340,7 @@ export default class JamesChanges extends View {
         const unstaged = [];
         const entries = status.stdout.split("\0").filter(Boolean);
 
-        for (const entry of entries.slice(0, 1000)) {
+        for (const entry of entries.slice(0, MAX_FILES)) {
           const x = entry[0];
           const y = entry[1];
           const path = entry.slice(3);
@@ -430,34 +382,11 @@ export default class JamesChanges extends View {
           );
         }
 
-        let commits = [];
-        if (head.code === 0) {
-          const logRes = await git([
-            "log",
-            "-n",
-            "30",
-            "--format=%h%x1f%s%x1f%b%x1f%an%x1f%cr%x1f%D%x1e",
-          ]);
-          if (logRes.code === 0) {
-            commits = logRes.stdout
-              .split("\x1e")
-              .map((s) => s.trim())
-              .filter(Boolean)
-              .map((rec, idx) => {
-                const [hash, subject, body, author, time, rawRefs] = rec.split("\x1f");
-                return {
-                  hash,
-                  subject: subject ?? "",
-                  body: (body ?? "").trim(),
-                  author: author ?? "",
-                  time: time ?? "",
-                  refs: parseRefs(rawRefs),
-                  isHead: idx === 0,
-                  unpushed: this.hasUpstream && idx < this.ahead,
-                };
-              });
-          }
-        }
+        const commits =
+          head.code === 0 && logRes.code === 0
+            ? parseGraphLog(logRes.stdout)
+            : [];
+        const lanes = commits.length ? layoutGraph(commits) : 1;
 
         if (key() !== context) return;
         this.root = root;
@@ -466,6 +395,7 @@ export default class JamesChanges extends View {
         this.staged = staged;
         this.unstaged = unstaged;
         this.commits = commits;
+        this.lanes = lanes;
         this.error = null;
         this.watch(root, cx);
 
@@ -478,165 +408,86 @@ export default class JamesChanges extends View {
           )
         ) {
           this.open = null;
-          this.setLines([]);
-        }
-        if (this.open) {
-          try {
-            await this.loadOpen(this.open, context);
-          } catch {
-            if (key() === context)
-              this.setLines(["Cannot preview this diff"]);
-          }
         }
       } catch (e) {
         if (key() === context) this.error = String(e);
       } finally {
         this.loading = false;
+        if (this.dirty) {
+          this.dirty = false;
+          this.refresh(cx);
+        }
         cx.notify();
       }
     });
   }
 
-  async loadOpen(target, context) {
-    const root = this.root;
-    const on = this.on;
-    if (!root || !target) return;
-
-    if (target.commit && target.path) {
-      const r = await exec(
-        "git",
-        [
-          ...READ,
-          "show",
-          "--no-ext-diff",
-          "--no-color",
-          "--format=",
-          target.commit,
-          "--",
-          target.path,
-        ],
-        { cwd: root, on }
-      );
-      if (r.code !== 0) throw new Error(r.stderr);
-      const all = r.stdout.replace(/\n$/, "").split("\n");
-      const first = all.findIndex((l) => l.startsWith("@@"));
-      const lines = first < 0 ? ["No text diff available"] : all.slice(first);
-      if (
-        key() === context &&
-        this.open?.commit === target.commit &&
-        this.open?.path === target.path
-      ) {
-        this.setLines(
-          lines
-            .slice(0, 1500)
-            .map((l) => (l.length > 4000 ? l.slice(0, 4000) + "…" : l))
-        );
-      }
-      return;
-    }
-
-    const list = target.staged ? this.staged : this.unstaged;
-    const file = list.find((f) => f.path === target.path);
-    if (!file) return;
-
-    let lines;
-    if (file.fresh || (!this.hasHead && file.status === "A" && !target.staged)) {
-      const text = await readTextFile(`${root}/${file.path}`, { on }).catch(
-        () => null
-      );
-      if (text === null)
-        lines = ["Cannot preview this file (binary, too large, or unreadable)"];
-      else if (text.includes("\0")) lines = ["Binary file · no text diff"];
-      else {
-        file.add = countLines(text);
-        lines = [
-          `@@ -0,0 +1,${file.add} @@`,
-          ...text
-            .slice(0, 400000)
-            .replace(/\n$/, "")
-            .split("\n")
-            .slice(0, 1500)
-            .map((l) => `+${l}`),
-        ];
-      }
-    } else {
-      const args = [
-        ...READ,
-        "diff",
-        ...(target.staged ? ["--cached"] : []),
-        "--no-ext-diff",
-        "--no-textconv",
-        "--no-color",
-        "--",
-        file.path,
-      ];
-      const r = await exec("git", args, { cwd: root, on });
-      if (r.code !== 0) throw new Error(r.stderr);
-      const all = r.stdout.replace(/\n$/, "").split("\n");
-      const first = all.findIndex((l) => l.startsWith("@@"));
-      lines =
-        first < 0
-          ? [file.binary ? "Binary file changed" : "No text diff available"]
-          : all.slice(first);
-    }
-    if (
-      key() === context &&
-      !this.open?.commit &&
-      this.open?.path === target.path &&
-      this.open?.staged === target.staged
-    ) {
-      this.setLines(
-        lines
-          .slice(0, 1500)
-          .map((line) =>
-            line.length > 4000 ? line.slice(0, 4000) + "… (line truncated)" : line
-          )
-      );
-    }
-  }
-
-  setLines(lines) {
-    this.rows = diffRows(lines);
-    this.diffWidth = Math.max(
-      300,
-      ...this.rows.map((row) => (row.text.length + 1) * 7 + 50)
-    );
-  }
-
+  // Diffs open in a centre tab (see diff-tab.js); `this.open` marks the row.
   pickFile(path, staged, cx, commit = null) {
-    const same =
-      this.open?.path === path &&
-      this.open?.staged === staged &&
-      (this.open?.commit ?? null) === commit;
-    this.open = same ? null : { path, staged, commit };
-    this.setLines([]);
+    const list = commit
+      ? this.commitFiles[commit] ?? []
+      : staged
+      ? this.staged
+      : this.unstaged;
+    const file = list.find((f) => f.path === path);
+    const c = commit
+      ? this.commits.find((x) => x.fullHash === commit || x.hash === commit)
+      : null;
+    this.open = { path, staged, commit };
     this.note = null;
-    const context = this.context;
-    if (this.open) {
-      cx.spawn(async (cx) => {
-        try {
-          await this.loadOpen(this.open, context);
-        } catch (e) {
-          if (key() === context) this.note = `Cannot preview diff: ${e}`;
-        }
-        cx.notify();
-      });
-    }
+    openDiffTab({
+      root: this.root,
+      on: this.on ?? null,
+      path,
+      staged: Boolean(staged),
+      fresh: Boolean(file?.fresh),
+      status: file?.status ?? null,
+      commit: c?.fullHash ?? commit,
+      short: c?.hash ?? commit,
+      subject: c?.subject ?? null,
+    });
     cx.notify();
   }
 
-  toggleCommitExpand(hash, cx) {
-    if (this.expandedCommit === hash) {
+  // Working-tree files open in Better Files' viewer (its gutter marks the changes).
+  // Deleted files have nothing on disk, so they fall back to the centre diff tab.
+  openFile(f, cx, keep = false) {
+    if (f.status === "D" || !this.root) {
+      this.pickFile(f.path, f.staged, cx);
+      return;
+    }
+    openInBetterFiles({ root: this.root, relative: f.path, on: this.on, keep });
+    this.lastOpened = f.path;
+    cx.notify();
+  }
+
+  fileIconEl(path, color, t, size = 15) {
+    const picture = fileIcon(this.fileIcons, path, {
+      light: isLight(t.background),
+    });
+    if (picture) return image(picture).size(size).flex_none();
+    return svg(ICON.fileFallback).size(size).flex_none().text_color(color);
+  }
+
+  folderIconEl(path, open, t, size = 15) {
+    const picture = fileIcon(this.fileIcons, path, {
+      dir: true,
+      open,
+      light: isLight(t.background),
+    });
+    if (picture) return image(picture).size(size).flex_none();
+    return svg(ICON.folder).size(size).flex_none().text_color(t.muted);
+  }
+
+  toggleCommitExpand(fullHash, cx) {
+    if (this.expandedCommit === fullHash) {
       this.expandedCommit = null;
-      if (this.open?.commit === hash) {
-        this.open = null;
-        this.setLines([]);
-      }
+      if (this.open?.commit === fullHash) this.open = null;
       cx.notify();
       return;
     }
-    this.expandedCommit = hash;
-    if (this.commitFiles[hash]) {
+    this.expandedCommit = fullHash;
+    if (this.commitFiles[fullHash]) {
       cx.notify();
       return;
     }
@@ -648,28 +499,62 @@ export default class JamesChanges extends View {
         const [statRes, statusRes] = await Promise.all([
           exec(
             "git",
-            [...READ, "show", "--numstat", "--format=", "-z", hash],
+            [
+              ...READ,
+              "show",
+              "--diff-merges=first-parent",
+              "--numstat",
+              "--format=",
+              "-z",
+              fullHash,
+            ],
             { cwd: root, on }
           ),
           exec(
             "git",
-            [...READ, "show", "--name-status", "--format=", "-z", hash],
+            [
+              ...READ,
+              "show",
+              "--diff-merges=first-parent",
+              "--name-status",
+              "--format=",
+              "-z",
+              fullHash,
+            ],
             { cwd: root, on }
           ),
         ]);
         const statusMap = {};
         if (statusRes.code === 0) {
           const tokens = statusRes.stdout.split("\0").filter(Boolean);
-          for (let i = 0; i < tokens.length - 1; i += 2) {
-            statusMap[tokens[i + 1]] = tokens[i][0] || "M";
+          for (let i = 0; i < tokens.length; ) {
+            const code = tokens[i][0] || "M";
+            if ((code === "R" || code === "C") && i + 2 < tokens.length) {
+              statusMap[tokens[i + 2]] = code;
+              i += 3;
+            } else if (i + 1 < tokens.length) {
+              statusMap[tokens[i + 1]] = code;
+              i += 2;
+            } else {
+              break;
+            }
           }
         }
         const files = [];
         if (statRes.code === 0) {
-          for (const entry of statRes.stdout.split("\0").filter(Boolean)) {
+          const entries = statRes.stdout.split("\0");
+          for (let i = 0; i < entries.length; i++) {
+            const entry = entries[i];
+            if (!entry) continue;
             const [a, d, ...parts] = entry.split("\t");
             if (!parts.length) continue;
-            const path = parts.join("\t");
+            let path = parts.join("\t");
+            // With -z, renames/copies emit `add\tdel\t` followed by oldPath and newPath.
+            if (!path && i + 2 < entries.length) {
+              path = entries[i + 2];
+              i += 2;
+            }
+            if (!path) continue;
             files.push({
               path,
               status: statusMap[path] ?? "M",
@@ -679,12 +564,12 @@ export default class JamesChanges extends View {
           }
         }
         if (key() === context) {
-          this.commitFiles[hash] = files;
+          this.commitFiles[fullHash] = files;
           cx.notify();
         }
       } catch {
         if (key() === context) {
-          this.commitFiles[hash] = [];
+          this.commitFiles[fullHash] = [];
           cx.notify();
         }
       }
@@ -692,8 +577,8 @@ export default class JamesChanges extends View {
     cx.notify();
   }
 
-  gitAction(args, cx, label = "Git command") {
-    if (!this.root || this.busy) return;
+  gitActions(argsList, cx, label = "Git command") {
+    if (!this.root || this.busy || !argsList.length) return;
     const root = this.root;
     const on = this.on;
     const isRemoteOp = label === "Pull" || label === "Push" || label === "Fetch";
@@ -701,6 +586,7 @@ export default class JamesChanges extends View {
     this.busy = true;
     this.busyAction = label;
     this.note = null;
+    this.asking = null;
     if (isRemoteOp) {
       notify({
         title: tr("sc.in_progress", { action: label }),
@@ -714,9 +600,11 @@ export default class JamesChanges extends View {
     }
     cx.spawn(async (cx) => {
       try {
-        const r = await exec("git", args, { cwd: root, on });
-        if (r.code !== 0)
-          throw new Error((r.stderr || r.stdout || `${label} failed`).trim());
+        for (const args of argsList) {
+          const r = await exec("git", args, { cwd: root, on });
+          if (r.code !== 0)
+            throw new Error((r.stderr || r.stdout || `${label} failed`).trim());
+        }
         if (isRemoteOp) {
           notify({
             title: tr("sc.completed", { action: label }),
@@ -747,6 +635,10 @@ export default class JamesChanges extends View {
     cx.notify();
   }
 
+  gitAction(args, cx, label = "Git command") {
+    this.gitActions([args], cx, label);
+  }
+
   stageFile(path, cx) {
     this.gitAction(["add", "--", path], cx, "Stage");
   }
@@ -773,12 +665,24 @@ export default class JamesChanges extends View {
     );
   }
 
-  discardFile(file, cx) {
-    if (file.fresh) {
-      this.gitAction(["clean", "-f", "--", file.path], cx, "Discard untracked");
-    } else {
-      this.gitAction(["checkout", "--", file.path], cx, "Discard changes");
-    }
+  askDiscard(files, cx) {
+    const tracked = files.filter((f) => !f.fresh).map((f) => f.path);
+    const fresh = files.filter((f) => f.fresh).map((f) => f.path);
+    const actions = [
+      ...(tracked.length ? [["checkout", "--", ...tracked]] : []),
+      ...(fresh.length ? [["clean", "-f", "--", ...fresh]] : []),
+    ];
+    if (!actions.length) return;
+    const one = files.length === 1 ? files[0].path.split("/").pop() : null;
+    const text = one
+      ? fresh.length
+        ? `Delete untracked file "${one}"?`
+        : `Discard changes to "${one}"?`
+      : `Discard ${tracked.length} changed${
+          fresh.length ? ` and delete ${fresh.length} untracked` : ""
+        } files?`;
+    this.asking = { text: `${text} This cannot be undone.`, actions };
+    cx.notify();
   }
 
   selectCommitMode(modeId, cx) {
@@ -841,7 +745,9 @@ export default class JamesChanges extends View {
     if (andPush) {
       notify({
         title: tr("sc.commit_push_progress"),
-        body: tr("sc.commit_push_progress_body", { branch: this.branch || "changes" }),
+        body: tr("sc.commit_push_progress_body", {
+          branch: this.branch || "changes",
+        }),
       });
     }
     cx.spawn(async (cx) => {
@@ -875,7 +781,9 @@ export default class JamesChanges extends View {
         }
       } catch (e) {
         if (key() === context)
-          this.note = `${andPush ? tr("sc.commit_push") : tr("sc.commit")}: ${e}`;
+          this.note = `${
+            andPush ? tr("sc.commit_push") : tr("sc.commit")
+          }: ${e}`;
         if (andPush) {
           notify({
             title: tr("sc.commit_push_fail"),
@@ -916,8 +824,13 @@ export default class JamesChanges extends View {
       aiCfg.spaces?.[root] ??
       (activeSpace?.id ? aiCfg.spaces?.[activeSpace.id] : null) ??
       {};
-    const promptText = (spaceCfg.prompt?.trim() || aiCfg.prompt?.trim() || DEFAULT_PROMPT).trim();
-    const rawGlobalIgnore = aiCfg.ignore !== undefined ? aiCfg.ignore : DEFAULT_IGNORE;
+    const promptText = (
+      spaceCfg.prompt?.trim() ||
+      aiCfg.prompt?.trim() ||
+      DEFAULT_PROMPT
+    ).trim();
+    const rawGlobalIgnore =
+      aiCfg.ignore !== undefined ? aiCfg.ignore : DEFAULT_IGNORE;
     const ignorePatterns = [rawGlobalIgnore, spaceCfg.ignore || ""]
       .join(",")
       .split(/[\n,]+/)
@@ -952,8 +865,22 @@ export default class JamesChanges extends View {
           exec(
             "git",
             useStaged
-              ? [...READ, "diff", "--cached", "--no-color", "--no-ext-diff", ...excludeSpec]
-              : [...READ, "diff", "HEAD", "--no-color", "--no-ext-diff", ...excludeSpec],
+              ? [
+                  ...READ,
+                  "diff",
+                  "--cached",
+                  "--no-color",
+                  "--no-ext-diff",
+                  ...excludeSpec,
+                ]
+              : [
+                  ...READ,
+                  "diff",
+                  "HEAD",
+                  "--no-color",
+                  "--no-ext-diff",
+                  ...excludeSpec,
+                ],
             { cwd: root, on }
           ),
         ]);
@@ -978,10 +905,10 @@ export default class JamesChanges extends View {
           throw new Error("No uncommitted changes to analyze.");
         }
         if (!diffText && statusOut) {
-          diffText = "(Diff omitted by ignore patterns; analyze git status above.)";
+          diffText =
+            "(Diff omitted by ignore patterns; analyze git status above.)";
         }
 
-        // Balance diff budget across all changed files when the diff is large
         const MAX_DIFF = 16000;
         let balancedDiff = diffText;
         if (diffText.length > MAX_DIFF) {
@@ -990,7 +917,9 @@ export default class JamesChanges extends View {
             const perFile = Math.max(600, Math.floor(MAX_DIFF / chunks.length));
             balancedDiff = chunks
               .map((c) =>
-                c.length > perFile ? c.slice(0, perFile) + "\n… (file diff truncated)" : c
+                c.length > perFile
+                  ? c.slice(0, perFile) + "\n… (file diff truncated)"
+                  : c
               )
               .join("\n")
               .slice(0, MAX_DIFF);
@@ -1068,672 +997,196 @@ export default class JamesChanges extends View {
     });
   }
 
-  diffRow({ kind, number, text }, t) {
-    if (kind === "@")
-      return div()
-        .w_full()
-        .px(12)
-        .h(20)
-        .flex_none()
-        .truncate()
-        .bg(t.raised)
-        .text_color(t.dim)
-        .child(text);
-    return h_flex()
-      .w_full()
-      .h(20)
-      .flex_none()
-      .gap(10)
-      .when(kind === "+", (e) => e.bg(t.ansi2 + "18"))
-      .when(kind === "-", (e) => e.bg(t.ansi1 + "18"))
-      .child(
-        div()
-          .w(30)
-          .flex_none()
-          .text_right()
-          .text_color(t.dim)
-          .child(number === undefined ? "" : String(number))
-      )
-      .child(div().flex_1().min_w(0).truncate().child(text));
+  // ── UI helpers ────────────────────────────────────────────────────────────
+  flip(id, cx) {
+    this.collapsed.has(id) ? this.collapsed.delete(id) : this.collapsed.add(id);
+    cx.notify();
   }
 
-  renderFileRow(f, t) {
-    const parts = f.path.split("/");
-    const name = parts.pop();
-    const isSelected =
-      !this.open?.commit &&
-      this.open?.path === f.path &&
-      this.open?.staged === f.staged;
-    const statusColor =
-      f.status === "A" || f.status === "U"
-        ? "#73c991"
-        : f.status === "D"
-        ? "#f14c4c"
-        : "#4daafc";
+  setHover(id, on, cx) {
+    const next = on ? id : this.hot === id ? null : this.hot;
+    if (next === this.hot) return;
+    this.hot = next;
+    if (Date.now() - this.wheelAt > 250) cx.notify();
+  }
 
-    const stageToggleBtn = h_flex()
-      .id(`stage-toggle-${f.staged ? "s" : "u"}-${f.path}`)
-      .w(18)
-      .h(18)
-      .rounded(4)
+  endDrag(cx) {
+    if (!this.drag) return;
+    this.drag = null;
+    localStorage.setItem("sc.caps", JSON.stringify(this.caps));
+    cx.notify();
+  }
+
+  iconBtn(id, iconPath, tip, fn, t, { spin = false, color = null, size = 13 } = {}) {
+    return div()
+      .id(id)
+      .size(22)
+      .flex_none()
+      .flex()
       .items_center()
       .justify_center()
-      .hover((s) => s.bg(t.surface))
+      .rounded(5)
+      .cursor_pointer()
+      .text_color(color ?? t.muted)
+      .hover((s) => s.bg(t.hover).text_color(t.foreground))
+      .active((s) => s.bg(t.selected))
+      .tooltip(tip)
       .on_mouse_down("left", (_ev, cx) => {
         cx.stop_propagation();
-        if (f.staged) this.unstageFile(f.path, cx);
-        else this.stageFile(f.path, cx);
+        fn(cx);
       })
-      .child(
-        svg(f.staged ? ICON.minus : ICON.plus)
-          .size(11)
-          .text_color(t.muted)
-      );
+      .child(svg(iconPath).size(size).when(spin, (e) => e.spin(900)));
+  }
+
+  // ── Header: Title + Branch + Pull/Push Sync + List/Tree + Refresh ─────────
+  renderHeader(t) {
+    const { cwd, spaceId } = location();
+    const pulling = this.busy && this.busyAction === "Pull";
+    const pushing = this.busy && this.busyAction === "Push";
+
+    const syncPill = (id, iconPath, count, tip, running, onDown) => {
+      const hot = count > 0;
+      return h_flex()
+        .id(id)
+        .h(22)
+        .px(hot ? 6 : 5)
+        .gap(3)
+        .flex_none()
+        .items_center()
+        .justify_center()
+        .rounded(5)
+        .cursor_pointer()
+        .when(hot, (e) => e.bg(t.accent + "22"))
+        .hover((s) => s.bg(t.hover).text_color(t.foreground))
+        .active((s) => s.bg(t.selected))
+        .tooltip(tip)
+        .on_mouse_down("left", (_ev, cx) => {
+          cx.stop_propagation();
+          onDown(cx);
+        })
+        .child(
+          running
+            ? svg(ICON.spinner).size(12).text_color(t.accent).spin(900)
+            : svg(iconPath)
+                .size(12)
+                .text_color(hot ? t.accent : t.muted)
+        )
+        .when(hot, (e) =>
+          e.child(
+            div()
+              .text_size(10.5)
+              .font_weight(600)
+              .text_color(t.accent)
+              .child(String(count))
+          )
+        );
+    };
 
     return h_flex()
-      .id(`file-${f.staged ? "s" : "u"}-${f.path}`)
-      .h(26)
+      .h(40)
       .flex_none()
       .pl(12)
       .pr(8)
-      .gap(6)
+      .gap(4)
       .items_center()
-      .rounded(5)
-      .cursor_pointer()
-      .when(isSelected, (e) => e.bg(t.selected))
-      .hover((s) => s.bg(t.hover))
-      .on_click((_e, cx) => this.pickFile(f.path, f.staged, cx))
+      .rounded_t(9)
+      .border_b(1)
+      .border_color(t.border)
+      .bg(t.chrome ?? t.background)
+      .child(
+        div()
+          .flex_none()
+          .font_semibold()
+          .text_size(13)
+          .text_color(t.foreground)
+          .child(tr("sc.title"))
+      )
       .child(
         h_flex()
+          .id("sc-branch-btn")
           .flex_1()
           .min_w(0)
-          .gap(5)
+          .h(24)
+          .px(6)
+          .gap(4)
+          .rounded(5)
           .items_center()
-          .child(div().truncate().text_size(12.5).child(name))
-          .when(parts.length > 0, (e) =>
-            e.child(
-              div()
-                .flex_1()
-                .min_w(0)
-                .truncate()
-                .text_size(11)
-                .text_color(t.dim)
-                .child(parts.join("/"))
-            )
-          )
-      )
-      .when(f.add > 0, (e) =>
-        e.child(div().text_size(10.5).text_color(t.ansi2).child(`+${f.add}`))
-      )
-      .when(f.del > 0, (e) =>
-        e.child(div().text_size(10.5).text_color(t.ansi1).child(`−${f.del}`))
-      )
-      .when(f.status !== "D", (e) => {
-        const openBtn = h_flex()
-          .id(`open-file-${f.staged ? "s" : "u"}-${f.path}`)
-          .w(18)
-          .h(18)
-          .rounded(4)
-          .items_center()
-          .justify_center()
-          .hover((s) => s.bg(t.surface))
+          .cursor_pointer()
+          .hover((s) => s.bg(t.hover))
+          .tooltip(tr("sc.switch_branch"))
           .on_mouse_down("left", (_ev, cx) => {
             cx.stop_propagation();
-            tipState.id = null;
-            cx.notify();
-            setShared("james-files.openRequest", {
-              root: this.root,
-              path: f.path,
-              ts: Date.now(),
+            openOverlay({
+              mod: "worktree",
+              kind: "dialog",
+              width: 560,
+              height: 480,
+              props: { space: spaceId, folder: cwd, action: "open" },
             });
-            run("layout.select", { stack: "panel-body", child: "files" });
-            run("layout.show", { id: "panel" });
           })
-          .child(svg(ICON.file).size(11).text_color(t.muted));
-        return e.child(
-          tipAbove(
-            `open-file-${f.staged ? "s" : "u"}-${f.path}`,
-            tr("sc.open_file"),
-            openBtn,
-            t
+          .child(svg(ICON.branch).size(12).flex_none().text_color(t.accent))
+          .child(
+            div()
+              .min_w(0)
+              .truncate()
+              .text_size(12)
+              .font_weight(500)
+              .text_color(t.accent)
+              .child(this.branch || "git")
           )
-        );
-      })
-      .when(!f.staged, (e) => {
-        const discardBtn = h_flex()
-          .id(`discard-${f.path}`)
-          .w(18)
-          .h(18)
-          .rounded(4)
-          .items_center()
-          .justify_center()
-          .hover((s) => s.bg(t.surface))
-          .on_mouse_down("left", (_ev, cx) => {
-            cx.stop_propagation();
-            this.discardFile(f, cx);
-          })
-          .child(svg(ICON.undo).size(11).text_color(t.muted));
-        return e.child(
-          tipAbove(`discard-${f.path}`, tr("sc.discard"), discardBtn, t)
-        );
-      })
+      )
       .child(
-        tipAbove(
-          `stage-${f.staged ? "s" : "u"}-${f.path}`,
-          f.staged ? tr("sc.unstage") : tr("sc.stage"),
-          stageToggleBtn,
+        syncPill(
+          "sc-hdr-pull",
+          ICON.arrowDown,
+          this.behind,
+          this.behind > 0 ? `${tr("sc.pull")} (${this.behind})` : tr("sc.pull"),
+          pulling,
+          (cx) => this.gitAction(["pull", "--ff-only"], cx, "Pull")
+        )
+      )
+      .child(
+        syncPill(
+          "sc-hdr-push",
+          ICON.arrowUp,
+          this.ahead,
+          this.ahead > 0 ? `${tr("sc.push")} (${this.ahead})` : tr("sc.push"),
+          pushing,
+          (cx) =>
+            this.gitAction(
+              this.hasUpstream ? ["push"] : ["push", "-u", "origin", "HEAD"],
+              cx,
+              "Push"
+            )
+        )
+      )
+      .child(
+        this.iconBtn(
+          "sc-view-toggle",
+          this.tree ? ICON.list : ICON.listTree,
+          this.tree ? tr("sc.view_list") : tr("sc.view_tree"),
+          (cx) => {
+            this.tree = !this.tree;
+            localStorage.setItem("sc.tree", this.tree ? "1" : "0");
+            cx.notify();
+          },
           t
         )
       )
       .child(
-        tipAbove(
-          `status-${f.staged ? "s" : "u"}-${f.path}`,
-          gitStatusLabel(f.status),
-          h_flex()
-            .id(`st-badge-${f.staged ? "s" : "u"}-${f.path}`)
-            .w(16)
-            .h(18)
-            .items_center()
-            .justify_center()
-            .text_size(11)
-            .font_weight(600)
-            .text_color(statusColor)
-            .child(f.status),
+        this.iconBtn(
+          "sc-refresh-btn",
+          ICON.refresh,
+          tr("sc.refresh"),
+          (cx) => this.refresh(cx),
           t,
-          "bottom_right"
+          { spin: Boolean(this.loading) }
         )
       );
   }
 
-  renderRefPill(ref, t) {
-    const isHead = ref.kind === "head";
-    const isRemote = ref.kind === "remote";
-    const bgColor = isHead
-      ? (t.ansi3 ?? t.accent) + "33"
-      : isRemote
-      ? (t.ansi5 ?? t.accent) + "33"
-      : t.raised;
-    const fgColor = isHead
-      ? t.ansi3 ?? t.accent
-      : isRemote
-      ? t.ansi5 ?? t.accent
-      : t.muted;
-
-    return h_flex()
-      .px(6)
-      .h(17)
-      .gap(4)
-      .rounded(9)
-      .flex_none()
-      .items_center()
-      .bg(bgColor)
-      .border_1()
-      .border_color(fgColor + "66")
-      .when(isHead, (e) =>
-        e.child(
-          div()
-            .w(6)
-            .h(6)
-            .rounded_full()
-            .border_1()
-            .border_color(fgColor)
-        )
-      )
-      .when(isRemote, (e) =>
-        e.child(svg(ICON.cloud).size(10).text_color(fgColor))
-      )
-      .child(
-        div()
-          .max_w(95)
-          .truncate()
-          .text_size(10)
-          .font_weight(600)
-          .text_color(fgColor)
-          .child(ref.name)
-      );
-  }
-
-  renderCommitRows(t) {
-    const out = [];
-    const total = this.commits.length;
-    this.commits.forEach((c, idx) => {
-      const expanded = this.expandedCommit === c.hash;
-      const lineColor = c.unpushed ? t.ansi3 ?? t.accent : t.ansi5 ?? t.accent;
-      const files = this.commitFiles[c.hash] ?? [];
-
-      out.push(
-        h_flex()
-          .id(`graph-commit-${c.hash}`)
-          .h(26)
-          .flex_none()
-          .px(8)
-          .gap(8)
-          .items_center()
-          .rounded(5)
-          .cursor_pointer()
-          .when(expanded, (e) => e.bg(t.selected))
-          .hover((s) => s.bg(t.hover))
-          .on_click((_e, cx) => this.toggleCommitExpand(c.hash, cx))
-          .child(
-            div()
-              .w(14)
-              .h_full()
-              .flex_none()
-              .relative()
-              .flex()
-              .items_center()
-              .justify_center()
-              .when(idx > 0, (e) =>
-                e.child(
-                  div()
-                    .absolute()
-                    .top(0)
-                    .h(13)
-                    .w(2)
-                    .bg(lineColor)
-                )
-              )
-              .when(idx < total - 1 || expanded, (e) =>
-                e.child(
-                  div()
-                    .absolute()
-                    .bottom(0)
-                    .h(13)
-                    .w(2)
-                    .bg(lineColor)
-                )
-              )
-              .child(
-                c.isHead
-                  ? div()
-                      .w(9)
-                      .h(9)
-                      .rounded_full()
-                      .bg(t.background)
-                      .border_2()
-                      .border_color(lineColor)
-                  : div().w(7).h(7).rounded_full().bg(lineColor)
-              )
-          )
-          .child(
-            div()
-              .flex_1()
-              .min_w(0)
-              .truncate()
-              .text_size(12)
-              .text_color(t.foreground)
-              .child(c.subject)
-          )
-          .when(c.refs.length > 0, (e) =>
-            e.children(c.refs.slice(0, 2).map((r) => this.renderRefPill(r, t)))
-          )
-          .child(
-            div()
-              .max_w(78)
-              .truncate()
-              .text_size(10.5)
-              .text_color(t.dim)
-              .child(c.author)
-          )
-      );
-
-      const commitAdd = files.reduce((n, f) => n + (f.add || 0), 0);
-      const commitDel = files.reduce((n, f) => n + (f.del || 0), 0);
-      const showBody = this.expandedBodyHashes.has(c.hash);
-
-      out.push(
-        v_flex()
-          .id(`graph-commit-files-wrap-${c.hash}`)
-          .w_full()
-          .flex_none()
-          .overflow_hidden()
-          .when(!expanded, (e) => e.h(0).opacity(0))
-          .when(expanded, (e) => e.opacity(1))
-          .transition("opacity", { duration: 130, easing: "ease-out" })
-          .when(expanded, (wrap) =>
-            wrap.child(
-              h_flex()
-                .id(`graph-commit-msg-${c.hash}`)
-                .w_full()
-                .px(8)
-                .gap(8)
-                .items_stretch()
-                .child(
-                  div()
-                    .w(14)
-                    .flex_none()
-                    .relative()
-                    .flex()
-                    .justify_center()
-                    .child(div().w(2).h_full().bg(lineColor + "88"))
-                )
-                .child(
-                  v_flex()
-                    .flex_1()
-                    .min_w(0)
-                    .pl(6)
-                    .py(4)
-                    .gap(4)
-                    .child(
-                      div()
-                        .w_full()
-                        .text_size(11.5)
-                        .font_weight(500)
-                        .text_color(t.foreground)
-                        .child(c.subject)
-                    )
-                    .when(Boolean(c.body), (bEl) =>
-                      bEl
-                        .when(showBody, (el) =>
-                          el.child(
-                            div()
-                              .w_full()
-                              .p(6)
-                              .rounded(5)
-                              .bg(t.raised)
-                              .border_1()
-                              .border_color(t.border)
-                              .text_size(11)
-                              .text_color(t.muted)
-                              .child(c.body)
-                          )
-                        )
-                        .child(
-                          h_flex().child(
-                            div()
-                              .id(`graph-body-toggle-${c.hash}`)
-                              .px(6)
-                              .py(2)
-                              .rounded(4)
-                              .bg(t.raised)
-                              .border_1()
-                              .border_color(t.border)
-                              .text_size(10.5)
-                              .text_color(t.muted)
-                              .cursor_pointer()
-                              .hover((s) => s.bg(t.hover).text_color(t.foreground))
-                              .on_mouse_down("left", (_ev, cx) => {
-                                cx.stop_propagation();
-                                if (this.expandedBodyHashes.has(c.hash)) {
-                                  this.expandedBodyHashes.delete(c.hash);
-                                } else {
-                                  this.expandedBodyHashes.add(c.hash);
-                                }
-                                cx.notify();
-                              })
-                              .child(showBody ? tr("sc.hide_details") : "...")
-                          )
-                        )
-                    )
-                )
-            )
-          )
-          .when(expanded && files.length === 0, (wrap) =>
-            wrap.child(
-              h_flex()
-                .id(`graph-commit-empty-${c.hash}`)
-                .h(22)
-                .flex_none()
-                .px(8)
-                .gap(8)
-                .items_center()
-                .child(
-                  div()
-                    .w(14)
-                    .h_full()
-                    .flex_none()
-                    .relative()
-                    .flex()
-                    .justify_center()
-                    .child(div().w(2).h_full().bg(lineColor))
-                )
-                .child(
-                  div()
-                    .text_size(11)
-                    .text_color(t.dim)
-                    .child(tr("sc.loading_commit_files"))
-                )
-            )
-          )
-          .when(expanded && files.length > 0, (wrap) =>
-            wrap
-              .child(
-                h_flex()
-                  .id(`graph-commit-summary-${c.hash}`)
-                  .h(22)
-                  .flex_none()
-                  .px(8)
-                  .gap(8)
-                  .items_center()
-                  .child(
-                    div()
-                      .w(14)
-                      .h_full()
-                      .flex_none()
-                      .relative()
-                      .flex()
-                      .justify_center()
-                      .child(div().w(2).h_full().bg(lineColor + "88"))
-                  )
-                  .child(
-                    div()
-                      .flex_1()
-                      .pl(6)
-                      .text_size(10.5)
-                      .text_color(t.dim)
-                      .child(tr("sc.files_changed", { count: files.length }))
-                  )
-                  .when(commitAdd > 0, (e) =>
-                    e.child(
-                      div()
-                        .text_size(10.5)
-                        .text_color(t.ansi2)
-                        .child(`+${commitAdd}`)
-                    )
-                  )
-                  .when(commitDel > 0, (e) =>
-                    e.child(
-                      div()
-                        .text_size(10.5)
-                        .text_color(t.ansi1)
-                        .child(`−${commitDel}`)
-                    )
-                  )
-              )
-              .children(
-                files.map((f) => {
-                const parts = f.path.split("/");
-                const name = parts.pop();
-                const isSelected =
-                  this.open?.commit === c.hash && this.open?.path === f.path;
-                const stColor =
-                  f.status === "A" || f.status === "U"
-                    ? "#73c991"
-                    : f.status === "D"
-                    ? "#f14c4c"
-                    : "#4daafc";
-
-                return h_flex()
-                  .id(`graph-file-${c.hash}-${f.path}`)
-                  .h(24)
-                  .flex_none()
-                  .px(8)
-                  .gap(8)
-                  .items_center()
-                  .rounded(5)
-                  .cursor_pointer()
-                  .when(isSelected, (e) => e.bg(t.selected))
-                  .hover((s) => s.bg(t.hover))
-                  .on_click((_e, cx) =>
-                    this.pickFile(f.path, false, cx, c.hash)
-                  )
-                  .child(
-                    div()
-                      .w(14)
-                      .h_full()
-                      .flex_none()
-                      .relative()
-                      .flex()
-                      .justify_center()
-                      .child(div().w(2).h_full().bg(lineColor + "88"))
-                  )
-                  .child(
-                    h_flex()
-                      .flex_1()
-                      .min_w(0)
-                      .pl(6)
-                      .gap(5)
-                      .items_center()
-                      .child(div().truncate().text_size(12).child(name))
-                      .when(parts.length > 0, (e) =>
-                        e.child(
-                          div()
-                            .flex_1()
-                            .min_w(0)
-                            .truncate()
-                            .text_size(10.5)
-                            .text_color(t.dim)
-                            .child(parts.join("/"))
-                        )
-                      )
-                  )
-                  .when(f.add > 0, (e) =>
-                    e.child(
-                      div()
-                        .text_size(10)
-                        .text_color(t.ansi2)
-                        .child(`+${f.add}`)
-                    )
-                  )
-                  .when(f.del > 0, (e) =>
-                    e.child(
-                      div()
-                        .text_size(10)
-                        .text_color(t.ansi1)
-                        .child(`−${f.del}`)
-                    )
-                  )
-                  .child(
-                    tipAbove(
-                      `graph-status-${c.hash}-${f.path}`,
-                      gitStatusLabel(f.status),
-                      h_flex()
-                        .id(`graph-st-badge-${c.hash}-${f.path}`)
-                        .w(16)
-                        .h(18)
-                        .items_center()
-                        .justify_center()
-                        .text_size(10.5)
-                        .font_weight(600)
-                        .text_color(stColor)
-                        .child(f.status),
-                      t,
-                      "bottom_right"
-                    )
-                  );
-              })
-            )
-          )
-      );
-    });
-    return out;
-  }
-
-  renderRowResizer(id, active, hovered, onHover, onMouseDown, t) {
-    return div()
-      .id(id)
-      .h(5)
-      .w_full()
-      .flex_none()
-      .cursor_row_resize()
-      .flex()
-      .items_center()
-      .on_hover(onHover)
-      .on_mouse_down("left", onMouseDown)
-      .child(
-        div()
-          .h(1)
-          .w_full()
-          .bg(active || hovered ? t.accent : t.border)
-      );
-  }
-
-  render(cx) {
-    if (key() !== this.context) this.refresh(cx);
-    const t = theme();
-    const allFiles = [...this.staged, ...this.unstaged];
-    const isAmend = this.commitMode === "amend";
-    const canCommit = Boolean(
-      this.message.trim() &&
-        this.root &&
-        !this.busy &&
-        !this.loading &&
-        (allFiles.length > 0 || isAmend)
-    );
-    const activeModeObj =
-      COMMIT_MODES.find((m) => m.id === this.commitMode) ?? COMMIT_MODES[0];
-    const { cwd, spaceId } = location();
-
-    const hasStaged = this.staged.length > 0;
-    const isResizingAny = Boolean(
-      this.resizingCommit || this.resizingGraph || this.resizingDiff
-    );
-
-    const hasMeasured = false;
-    const availH = 400;
-    const stagedBodyH = 0;
-    const changesBodyH = 0;
-    const graphBodyH = 0;
-    const showGraphResizer =
-      !this.foldGraphSection &&
-      (!this.foldUnstaged || (hasStaged && !this.foldStaged));
-
-    const stagedAdd = this.staged.reduce((n, f) => n + (f.add || 0), 0);
-    const stagedDel = this.staged.reduce((n, f) => n + (f.del || 0), 0);
-    const unstagedAdd = this.unstaged.reduce((n, f) => n + (f.add || 0), 0);
-    const unstagedDel = this.unstaged.reduce((n, f) => n + (f.del || 0), 0);
-
-    const allSectionsFolded =
-      this.foldUnstaged &&
-      (!hasStaged || this.foldStaged) &&
-      this.foldGraphSection;
-
-    // Avoid double border at the bottom of the panel when Graph is collapsed at the bottom
-    const graphHeaderHasBottomBorder =
-      !this.foldGraphSection || Boolean(this.open) || allSectionsFolded;
-
-    const branchBtn = h_flex()
-      .id("sc-branch-btn")
-      .h(24)
-      .px(8)
-      .gap(5)
-      .rounded(6)
-      .items_center()
-      .cursor_pointer()
-      .border_1()
-      .border_color(t.border)
-      .bg(t.raised)
-      .hover((s) => s.bg(t.hover))
-      .on_mouse_down("left", (_ev, cx) => {
-        cx.stop_propagation();
-        openOverlay({
-          mod: "worktree",
-          kind: "dialog",
-          width: 560,
-          height: 480,
-          props: { space: spaceId, folder: cwd, action: "open" },
-        });
-      })
-      .child(svg(ICON.branch).size(11).text_color(t.accent))
-      .child(
-        div()
-          .max_w(120)
-          .truncate()
-          .text_size(11.5)
-          .font_weight(500)
-          .child(this.branch || "git")
-      );
-
+  // ── Commit Composer ───────────────────────────────────────────────────────
+  renderComposer(t, canCommit, activeModeObj) {
     const dropdownArrowBtn = h_flex()
       .id("sc-commit-dropdown-btn")
       .w(28)
@@ -1742,6 +1195,7 @@ export default class JamesChanges extends View {
       .justify_center()
       .cursor_pointer()
       .hover((s) => s.opacity(0.85))
+      .tooltip(tr("sc.more_commit_actions"))
       .on_mouse_down("left", (_ev, cx) => {
         cx.stop_propagation();
         this.showCommitMenu = !this.showCommitMenu;
@@ -1755,9 +1209,9 @@ export default class JamesChanges extends View {
 
     const splitCommitButton = h_flex()
       .id("sc-commit-split-bar")
-      .h(28)
+      .h(29)
       .w_full()
-      .rounded(6)
+      .rounded(7)
       .overflow_hidden()
       .border_1()
       .border_color(canCommit ? t.accent : t.border)
@@ -1781,11 +1235,20 @@ export default class JamesChanges extends View {
             this.runCommit(cx);
           })
           .child(
-            svg(ICON.check)
-              .size(13)
-              .text_color(canCommit ? t.solid_foreground : t.dim)
+            this.busy && (this.busyAction === "Commit" || this.busyAction === "Push")
+              ? svg(ICON.spinner)
+                  .size(12)
+                  .text_color(canCommit ? t.solid_foreground : t.dim)
+                  .spin(900)
+              : svg(ICON.check)
+                  .size(13)
+                  .text_color(canCommit ? t.solid_foreground : t.dim)
           )
-          .child(div().child(this.busy ? tr("sc.working") : tr(activeModeObj.labelKey)))
+          .child(
+            div().child(
+              this.busy ? tr("sc.working") : tr(activeModeObj.labelKey)
+            )
+          )
       )
       .child(
         div()
@@ -1793,14 +1256,1086 @@ export default class JamesChanges extends View {
           .h_full()
           .bg(canCommit ? t.background + "44" : t.border)
       )
+      .child(dropdownArrowBtn);
+
+    return v_flex()
+      .flex_none()
+      .px(8)
+      .pt(8)
+      .pb(6)
+      .gap(6)
+      .border_b(1)
+      .border_color(t.border)
+      .bg(t.background)
       .child(
-        tipAbove(
-          "more-commit-actions",
-          tr("sc.more_commit_actions"),
-          dropdownArrowBtn,
-          t
-        )
+        div()
+          .id("sc-commit-input-wrapper")
+          .h(this.commitHeight)
+          .p(7)
+          .relative()
+          .rounded(8)
+          .border_1()
+          .border_color(this.typing ? t.accent : t.border)
+          .when(!this.typing, (e) =>
+            e.hover((s) => s.border_color(t.input ?? t.muted))
+          )
+          .bg(t.canvas ?? t.background)
+          .cursor_text()
+          .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+          .child(
+            Textarea.new(this.input)
+              .size_full()
+              .text_size(12)
+              .text_color(t.foreground)
+          )
+          .child(
+            h_flex()
+              .absolute()
+              .right(6)
+              .bottom(6)
+              .gap(4)
+              .items_center()
+              .child(
+                h_flex()
+                  .id("sc-ai-space-cfg")
+                  .w(22)
+                  .h(22)
+                  .rounded(5)
+                  .items_center()
+                  .justify_center()
+                  .border_1()
+                  .border_color(t.border)
+                  .bg(t.raised)
+                  .cursor_pointer()
+                  .hover((s) => s.bg(t.hover))
+                  .tooltip("AI Commit Settings")
+                  .on_mouse_down("left", (_ev, cx) => {
+                    cx.stop_propagation();
+                    const activeSpace = spaces().find((s) => s.active);
+                    const spaceKey =
+                      activeSpace?.folder ||
+                      this.root ||
+                      activeSpace?.id ||
+                      "__global__";
+                    openOverlay({
+                      mod: "james-settings",
+                      kind: "dialog",
+                      width: 600,
+                      height: 500,
+                      props: { section: "ai-commit", spaceKey },
+                    });
+                  })
+                  .child(svg(ICON.sliders).size(11).text_color(t.muted))
+              )
+              .child(
+                h_flex()
+                  .id("sc-ai-generate-btn")
+                  .h(22)
+                  .px(8)
+                  .gap(4)
+                  .rounded(5)
+                  .items_center()
+                  .border_1()
+                  .border_color(t.border)
+                  .bg(t.raised)
+                  .text_size(11)
+                  .text_color(this.generating ? t.accent : t.muted)
+                  .cursor_pointer()
+                  .hover((s) => s.bg(t.hover).text_color(t.foreground))
+                  .on_mouse_down("left", (_ev, cx) => {
+                    cx.stop_propagation();
+                    this.generateAiCommit(cx);
+                  })
+                  .child(
+                    this.generating
+                      ? svg(ICON.spinner).size(11).text_color(t.accent).spin(900)
+                      : svg(ICON.sparkles).size(11).text_color(t.accent)
+                  )
+                  .child(
+                    div().child(
+                      this.generating ? tr("sc.generating") : tr("sc.generate")
+                    )
+                  )
+              )
+          )
+          .child(
+            div()
+              .id("sc-textarea-edge-resizer")
+              .absolute()
+              .left(0)
+              .right(0)
+              .bottom(0)
+              .h(4)
+              .cursor_row_resize()
+              .on_hover((hovered, cx) => {
+                this.hoverCommitResizer = hovered;
+                cx.notify();
+              })
+              .on_mouse_down("left", (e, cx) => {
+                cx.stop_propagation();
+                this.resizingCommit = {
+                  startY: e.position.y,
+                  startH: this.commitHeight,
+                };
+                cx.notify();
+              })
+          )
+      )
+      .child(
+        Popup.new("sc-commit-actions-popup", splitCommitButton)
+          .anchor("bottom_right")
+          .when(this.showCommitMenu, (el) =>
+            el.content(
+              v_flex()
+                .id("sc-commit-actions-menu")
+                .w(190)
+                .p(4)
+                .gap(2)
+                .rounded(7)
+                .border_1()
+                .border_color(t.border)
+                .bg(t.popover ?? t.raised)
+                .on_mouse_down_out((_e, cx) => {
+                  this.showCommitMenu = false;
+                  cx.notify();
+                })
+                .children(
+                  COMMIT_MODES.map((m) => {
+                    const active = this.commitMode === m.id;
+                    return h_flex()
+                      .id(`sc-mode-${m.id}`)
+                      .h(26)
+                      .px(8)
+                      .gap(7)
+                      .rounded(5)
+                      .items_center()
+                      .cursor_pointer()
+                      .when(active, (item) => item.bg(t.selected))
+                      .hover((s) => s.bg(t.hover))
+                      .on_mouse_down("left", (_ev, cx) => {
+                        cx.stop_propagation();
+                        this.selectCommitMode(m.id, cx);
+                      })
+                      .child(
+                        active
+                          ? svg(ICON.check)
+                              .size(11)
+                              .flex_none()
+                              .text_color(t.accent)
+                          : div().w(11).flex_none()
+                      )
+                      .child(div().text_size(11.5).child(tr(m.labelKey)));
+                  })
+                )
+            )
+          )
       );
+  }
+
+  // ── File rows (flat & tree) with hover actions ────────────────────────────
+  renderFileRow(f, depth, flat, t) {
+    const parts = f.path.split("/");
+    const name = parts.pop();
+    const rowId = `${f.staged ? "s" : "u"}-${f.path}`;
+    const isSelected =
+      !this.open?.commit &&
+      this.open?.path === f.path &&
+      this.open?.staged === f.staged;
+    const isLastOpened = !isSelected && this.lastOpened === f.path;
+    const shown = isSelected || this.hot === rowId;
+    const col = statusColor(t, f.status);
+
+    const actionBtn = (iconName, iconPath, tip, fn) =>
+      this.iconBtn(`act-${iconName}-${rowId}`, iconPath, tip, (cx) => {
+        this.hot = null;
+        fn(cx);
+      }, t, { size: 12 });
+
+    return h_flex()
+      .id(`row-${rowId}`)
+      .h(26)
+      .flex_none()
+      .pl(8 + depth * 14)
+      .pr(4)
+      .gap(4)
+      .items_center()
+      .rounded(6)
+      .cursor_pointer()
+      .when(isSelected, (e) => e.bg(t.selected))
+      .when(isLastOpened, (e) => e.bg(t.hover))
+      .when(!isSelected, (e) => e.hover((s) => s.bg(t.hover)))
+      .on_hover((on, cx) => this.setHover(rowId, on, cx))
+      .on_mouse_down("left", (ev, cx) =>
+        this.openFile(f, cx, ev.click_count >= 2)
+      )
+      .child(
+        h_flex()
+          .flex_1()
+          .min_w(0)
+          .gap(6)
+          .items_center()
+          .child(this.fileIconEl(f.path, col, t))
+          .child(
+            div()
+              .min_w(0)
+              .truncate()
+              .text_size(12.5)
+              .text_color(col)
+              .when(f.status === "D", (e) => e.line_through())
+              .child(name)
+          )
+          .when(flat && parts.length > 0, (e) =>
+            e.child(
+              div()
+                .flex_1()
+                .min_w(0)
+                .truncate()
+                .text_size(11)
+                .text_color(t.dim)
+                .child(parts.join("/"))
+            )
+          )
+      )
+      .when(!shown && f.add > 0, (e) =>
+        e.child(div().text_size(10.5).text_color(t.ansi2).child(`+${f.add}`))
+      )
+      .when(!shown && f.del > 0, (e) =>
+        e.child(div().text_size(10.5).text_color(t.ansi1).child(`−${f.del}`))
+      )
+      .when(shown, (e) =>
+        e
+          .child(
+            actionBtn("diff", ICON.diff, tr("sc.open_diff"), (cx) =>
+              this.pickFile(f.path, f.staged, cx)
+            )
+          )
+          .when(!f.staged, (el) =>
+            el.child(
+              actionBtn("undo", ICON.undo, tr("sc.discard"), (cx) =>
+                this.askDiscard([f], cx)
+              )
+            )
+          )
+          .child(
+            actionBtn(
+              f.staged ? "unstage" : "stage",
+              f.staged ? ICON.minus : ICON.plus,
+              f.staged ? tr("sc.unstage") : tr("sc.stage"),
+              (cx) =>
+                f.staged
+                  ? this.unstageFile(f.path, cx)
+                  : this.stageFile(f.path, cx)
+            )
+          )
+      )
+      .child(
+        div()
+          .id(`st-${rowId}`)
+          .w(16)
+          .flex_none()
+          .text_center()
+          .text_size(11)
+          .font_weight(600)
+          .text_color(col)
+          .tooltip(gitStatusLabel(f.status))
+          .child(f.status)
+      );
+  }
+
+  renderFileRows(files, scope, t, emptyText) {
+    if (!files.length) {
+      return [
+        h_flex()
+          .h(26)
+          .flex_none()
+          .px(10)
+          .items_center()
+          .text_size(12)
+          .text_color(t.dim)
+          .child(emptyText),
+      ];
+    }
+    if (!this.tree) {
+      return files.map((f) => this.renderFileRow(f, 0, true, t));
+    }
+    const out = [];
+    const seen = new Set();
+    for (const f of [...files].sort((a, b) => a.path.localeCompare(b.path))) {
+      const parts = f.path.split("/");
+      let hidden = false;
+      for (let i = 0; i < parts.length - 1 && !hidden; i++) {
+        const relDir = parts.slice(0, i + 1).join("/");
+        const dirKey = `${scope}:${relDir}`;
+        if (!seen.has(dirKey)) {
+          seen.add(dirKey);
+          const closed = this.collapsed.has(dirKey);
+          out.push(
+            h_flex()
+              .id(`dir-${dirKey}`)
+              .h(26)
+              .flex_none()
+              .pl(6 + i * 14)
+              .pr(6)
+              .gap(5)
+              .items_center()
+              .rounded(6)
+              .cursor_pointer()
+              .hover((s) => s.bg(t.hover))
+              .on_mouse_down("left", (_ev, cx) => {
+                cx.stop_propagation();
+                this.flip(dirKey, cx);
+              })
+              .child(
+                svg(closed ? ICON.chevronRight : ICON.chevronDown)
+                  .size(11)
+                  .flex_none()
+                  .text_color(t.dim)
+              )
+              .child(this.folderIconEl(relDir, !closed, t))
+              .child(
+                div()
+                  .min_w(0)
+                  .truncate()
+                  .text_size(12)
+                  .text_color(t.muted)
+                  .child(parts[i])
+              )
+          );
+        }
+        hidden = this.collapsed.has(dirKey);
+      }
+      if (!hidden) out.push(this.renderFileRow(f, parts.length - 1, false, t));
+    }
+    return out;
+  }
+
+  // ── Collapsible section with rounded pill header + draggable grip ─────────
+  renderSection(id, title, count, stats, actions, bodyFn, t, { cap = null, fill = false } = {}) {
+    const open = !this.collapsed.has(id);
+    const list = open && !fill ? bodyFn() : [];
+
+    const head = h_flex()
+      .h(28)
+      .flex_none()
+      .px(6)
+      .gap(4)
+      .items_center()
+      .bg(t.raised)
+      .rounded(6)
+      .child(
+        h_flex()
+          .id(`sec-${id}`)
+          .flex_1()
+          .min_w(0)
+          .h_full()
+          .px(2)
+          .gap(6)
+          .items_center()
+          .cursor_pointer()
+          .on_mouse_down("left", (_ev, cx) => {
+            cx.stop_propagation();
+            this.flip(id, cx);
+          })
+          .child(
+            svg(open ? ICON.chevronDown : ICON.chevronRight)
+              .size(11)
+              .flex_none()
+              .text_color(t.dim)
+          )
+          .child(
+            div()
+              .font_semibold()
+              .text_size(12)
+              .text_color(t.foreground)
+              .truncate()
+              .child(title)
+          )
+          .child(
+            div()
+              .flex_none()
+              .px(6)
+              .rounded(8)
+              .bg(t.hover)
+              .text_size(10)
+              .text_color(t.muted)
+              .child(String(count))
+          )
+      )
+      .when(stats?.add > 0, (e) =>
+        e.child(div().text_size(10.5).text_color(t.ansi2).child(`+${stats.add}`))
+      )
+      .when(stats?.del > 0, (e) =>
+        e.child(div().text_size(10.5).text_color(t.ansi1).child(`−${stats.del}`))
+      );
+
+    for (const a of actions) head.child(a);
+
+    if (!open) {
+      this.used += 30;
+      return [head];
+    }
+
+    if (fill) {
+      const body = bodyFn();
+      if (Array.isArray(body)) {
+        return [
+          head,
+          v_flex()
+            .id(`scroll-${id}`)
+            .flex_1()
+            .min_h(0)
+            .w_full()
+            .overflow_y_scrollbar()
+            .gap(2)
+            .children(body),
+        ];
+      }
+      return [head, body];
+    }
+
+    const height = Math.min(cap ?? 200, Math.max(1, list.length) * 28 + 2);
+    this.used += 30 + height + 10;
+
+    const grip = div()
+      .id(`grip-${id}`)
+      .h(6)
+      .flex_none()
+      .flex()
+      .items_center()
+      .justify_center()
+      .rounded(3)
+      .cursor_row_resize()
+      .hover((s) => s.bg(t.hover))
+      .on_mouse_down("left", (e, cx) => {
+        cx.stop_propagation();
+        this.drag = {
+          id,
+          y: e.position.y,
+          start: height,
+          max: Math.min(
+            Math.max(1, list.length) * 28 + 2,
+            height + Math.max(0, this.spare ?? 260)
+          ),
+        };
+        cx.notify();
+      })
+      .child(
+        div()
+          .w(28)
+          .h(2)
+          .rounded(1)
+          .bg(this.drag?.id === id ? t.accent : t.border)
+      );
+
+    return [
+      head,
+      v_flex()
+        .id(`scroll-${id}`)
+        .flex_none()
+        .h(height)
+        .overflow_y_scrollbar()
+        .gap(2)
+        .children(list),
+      grip,
+    ];
+  }
+
+  // ── Multi-lane Commit Graph ───────────────────────────────────────────────
+  renderSubject(c, t) {
+    const isMerge = c.parents.length > 1;
+    const [, prefix, msg] =
+      /^(\w+(?:\([^)]*\))?!?:\s+)(.*)$/.exec(c.subject) ?? [, "", c.subject];
+    return h_flex()
+      .flex_1()
+      .min_w(60)
+      .gap(4)
+      .items_center()
+      .when(c.isHead, (e) => e.font_weight(600))
+      .when(Boolean(prefix), (e) =>
+        e.child(
+          div()
+            .flex_none()
+            .text_size(12)
+            .text_color(t.dim)
+            .child(prefix.trim())
+        )
+      )
+      .child(
+        div()
+          .min_w(0)
+          .truncate()
+          .text_size(12)
+          .text_color(isMerge ? t.muted : t.foreground)
+          .child(msg)
+      );
+  }
+
+  renderRefBadge(r, t) {
+    const local = r.kind === "local";
+    return div()
+      .min_w(0)
+      .max_w(92)
+      .truncate()
+      .px(5)
+      .rounded(4)
+      .text_size(10)
+      .font_weight(500)
+      .when(local, (e) => e.bg(t.accent + "24").text_color(t.accent))
+      .when(!local, (e) =>
+        e
+          .border_1()
+          .border_color(r.kind === "tag" ? t.ansi3 + "66" : t.border)
+          .text_color(r.kind === "tag" ? t.ansi3 : t.muted)
+      )
+      .child(r.name);
+  }
+
+  renderCommitBody(body, t) {
+    const lines = body.split("\n");
+    return v_flex()
+      .w_full()
+      .pt(5)
+      .gap(3)
+      .border_t(1)
+      .border_color(t.border)
+      .text_size(11.5)
+      .text_color(t.muted)
+      .children(
+        lines.map((raw) => {
+          if (!raw.trim()) return div().h(4);
+          const bullet = /^(\s*)[-*]\s+(.*)$/.exec(raw);
+          if (bullet) {
+            const indent = Math.min(24, Math.floor(bullet[1].length / 2) * 10);
+            return h_flex()
+              .w_full()
+              .pl(indent)
+              .gap(6)
+              .items_start()
+              .child(
+                div()
+                  .w(4)
+                  .h(4)
+                  .mt(6)
+                  .rounded_full()
+                  .flex_none()
+                  .bg(t.muted)
+              )
+              .child(div().flex_1().min_w(0).child(bullet[2]));
+          }
+          return div().w_full().child(raw);
+        })
+      );
+  }
+
+  renderGraph(t) {
+    if (!this.commits.length) {
+      return h_flex()
+        .flex_1()
+        .min_h(0)
+        .px(10)
+        .py(8)
+        .items_start()
+        .text_size(12)
+        .text_color(t.dim)
+        .child(this.loading ? "Loading history…" : tr("sc.no_commits"));
+    }
+
+    const n = this.lanes;
+    const L = laneWidth(n);
+    const graphW = Math.min(n * L, GRAPH_MAX);
+    const limit = this.commitLimit ?? 50;
+    const visible = this.commits.slice(0, limit);
+    const rows = [];
+
+    for (const c of visible) {
+      const open = this.expandedCommit === c.fullHash;
+      const more = c.refs.length - 2;
+
+      rows.push(
+        h_flex()
+          .id(`c-${c.fullHash}`)
+          .h(GRAPH_ROW)
+          .flex_none()
+          .w_full()
+          .pl(4)
+          .pr(8)
+          .gap(8)
+          .items_center()
+          .rounded(6)
+          .cursor_pointer()
+          .when(open, (e) => e.bg(t.selected))
+          .when(!open && c.isHead, (e) => e.bg(laneColor(t, c.col) + "12"))
+          .when(!open, (e) => e.hover((s) => s.bg(t.hover)))
+          .on_mouse_down("left", (_ev, cx) => {
+            cx.stop_propagation();
+            this.toggleCommitExpand(c.fullHash, cx);
+          })
+          .child(graphCell(c, n, L, t, t.background))
+          .child(this.renderSubject(c, t))
+          .when(c.refs.length > 0, (e) =>
+            e.child(
+              h_flex()
+                .min_w(0)
+                .gap(4)
+                .items_center()
+                .overflow_hidden()
+                .children(c.refs.slice(0, 2).map((r) => this.renderRefBadge(r, t)))
+                .when(more > 0, (el) =>
+                  el.child(
+                    div()
+                      .flex_none()
+                      .text_size(10)
+                      .text_color(t.dim)
+                      .child(`+${more}`)
+                  )
+                )
+            )
+          )
+          .child(
+            div()
+              .flex_none()
+              .text_size(11)
+              .text_color(t.dim)
+              .child(age(c.time))
+          )
+      );
+
+      if (!open) continue;
+
+      const railLines = c.below
+        .filter((i) => i * L < graphW)
+        .map((i) =>
+          div()
+            .absolute()
+            .left(4 + i * L + L / 2 - 1)
+            .top(0)
+            .bottom(0)
+            .w(2)
+            .bg(laneColor(t, i))
+        );
+
+      const files = this.commitFiles[c.fullHash];
+      const showFullBody = this.expandedBodyHashes.has(c.fullHash);
+
+      rows.push(
+        div()
+          .id(`cdetail-${c.fullHash}`)
+          .relative()
+          .flex_none()
+          .w_full()
+          .children(railLines)
+          .child(
+            v_flex()
+              .ml(4 + graphW + 4)
+              .mr(6)
+              .my(3)
+              .gap(4)
+              .child(
+                // Commit details card (auto-sizing, never clipped)
+                v_flex()
+                  .p(8)
+                  .gap(5)
+                  .rounded(6)
+                  .bg(t.raised)
+                  .border_1()
+                  .border_color(t.border)
+                  .child(
+                    div()
+                      .w_full()
+                      .text_size(12)
+                      .font_weight(500)
+                      .text_color(t.foreground)
+                      .child(c.subject)
+                  )
+                  .child(
+                    h_flex()
+                      .gap(6)
+                      .items_center()
+                      .child(
+                        div()
+                          .flex_none()
+                          .px(5)
+                          .py(1)
+                          .rounded(4)
+                          .bg(t.background)
+                          .text_size(10.5)
+                          .font_weight(600)
+                          .text_color(t.accent)
+                          .child(c.hash)
+                      )
+                      .child(
+                        div()
+                          .flex_1()
+                          .min_w(0)
+                          .truncate()
+                          .text_size(11)
+                          .text_color(t.dim)
+                          .child(`${c.author} · ${c.time}`)
+                      )
+                  )
+                  .when(Boolean(c.body), (el) =>
+                    el
+                      .when(showFullBody, (bEl) =>
+                        bEl.child(this.renderCommitBody(c.body, t))
+                      )
+                      .child(
+                        h_flex().child(
+                          div()
+                            .id(`cbody-toggle-${c.fullHash}`)
+                            .px(6)
+                            .py(2)
+                            .rounded(4)
+                            .bg(t.background)
+                            .border_1()
+                            .border_color(t.border)
+                            .text_size(10.5)
+                            .text_color(t.muted)
+                            .cursor_pointer()
+                            .hover((s) => s.bg(t.hover).text_color(t.foreground))
+                            .on_mouse_down("left", (_ev, cx) => {
+                              cx.stop_propagation();
+                              if (showFullBody)
+                                this.expandedBodyHashes.delete(c.fullHash);
+                              else this.expandedBodyHashes.add(c.fullHash);
+                              cx.notify();
+                            })
+                            .child(
+                              showFullBody
+                                ? tr("sc.hide_details")
+                                : "Show full message"
+                            )
+                        )
+                      )
+                  )
+              )
+              .when(!files, (el) =>
+                el.child(
+                  div()
+                    .px(6)
+                    .py(3)
+                    .text_size(11)
+                    .text_color(t.dim)
+                    .child(tr("sc.loading_commit_files"))
+                )
+              )
+              .when(Boolean(files && !files.length), (el) =>
+                el.child(
+                  div()
+                    .px(6)
+                    .py(3)
+                    .text_size(11)
+                    .text_color(t.dim)
+                    .child("No file changes")
+                )
+              )
+              .when(Boolean(files && files.length), (el) =>
+                el.children(
+                  files.map((f) => {
+                    const cfId = `cf-${c.fullHash}-${f.path}`;
+                    const picked =
+                      (this.open?.commit === c.fullHash ||
+                        this.open?.commit === c.hash) &&
+                      this.open?.path === f.path;
+                    const hovered = this.hot === cfId;
+                    const parts = f.path.split("/");
+                    const name = parts.pop();
+                    const col = statusColor(t, f.status);
+
+                    return h_flex()
+                      .id(cfId)
+                      .h(24)
+                      .flex_none()
+                      .px(6)
+                      .gap(5)
+                      .items_center()
+                      .rounded(5)
+                      .cursor_pointer()
+                      .when(picked, (r) => r.bg(t.selected))
+                      .when(!picked, (r) => r.hover((s) => s.bg(t.hover)))
+                      .on_hover((on, cx) => this.setHover(cfId, on, cx))
+                      .on_mouse_down("left", (_ev, cx) => {
+                        cx.stop_propagation();
+                        this.pickFile(f.path, false, cx, c.fullHash);
+                      })
+                      .child(this.fileIconEl(f.path, col, t, 14))
+                      .child(
+                        div()
+                          .min_w(0)
+                          .truncate()
+                          .text_size(12)
+                          .text_color(col)
+                          .when(f.status === "D", (r) => r.line_through())
+                          .child(name)
+                      )
+                      .child(
+                        div()
+                          .flex_1()
+                          .min_w(0)
+                          .truncate()
+                          .text_size(10.5)
+                          .text_color(t.dim)
+                          .child(parts.join("/"))
+                      )
+                      .when(!hovered && f.add > 0, (r) =>
+                        r.child(
+                          div().text_size(10).text_color(t.ansi2).child(`+${f.add}`)
+                        )
+                      )
+                      .when(!hovered && f.del > 0, (r) =>
+                        r.child(
+                          div().text_size(10).text_color(t.ansi1).child(`−${f.del}`)
+                        )
+                      )
+                      .when(hovered && f.status !== "D", (r) =>
+                        r.child(
+                          this.iconBtn(
+                            `cf-open-${c.fullHash}-${f.path}`,
+                            ICON.file,
+                            tr("sc.open_in_files"),
+                            (cx) => {
+                              openInBetterFiles({
+                                root: this.root,
+                                relative: f.path,
+                                on: this.on,
+                              });
+                              cx.notify();
+                            },
+                            t,
+                            { size: 11 }
+                          )
+                        )
+                      )
+                      .child(
+                        div()
+                          .w(14)
+                          .flex_none()
+                          .text_center()
+                          .text_size(10.5)
+                          .font_weight(600)
+                          .text_color(col)
+                          .child(f.status)
+                      );
+                  })
+                )
+              )
+          )
+      );
+    }
+
+    if (this.commits.length > limit) {
+      rows.push(
+        h_flex()
+          .id("sc-graph-more")
+          .h(26)
+          .flex_none()
+          .mt(2)
+          .items_center()
+          .justify_center()
+          .rounded(6)
+          .cursor_pointer()
+          .text_size(11.5)
+          .text_color(t.muted)
+          .hover((s) => s.bg(t.hover).text_color(t.foreground))
+          .on_mouse_down("left", (_ev, cx) => {
+            cx.stop_propagation();
+            this.commitLimit = limit + 50;
+            cx.notify();
+          })
+          .child(`Load more (${this.commits.length - limit} remaining)`)
+      );
+    }
+
+    return v_flex()
+      .id("sc-graph-scroll")
+      .flex_1()
+      .min_h(0)
+      .w_full()
+      .overflow_y_scrollbar()
+      .gap(1)
+      .children(rows);
+  }
+
+  renderNotice(iconPath, title, hint, t, spin = false) {
+    return v_flex()
+      .flex_1()
+      .py(32)
+      .px(16)
+      .gap(6)
+      .items_center()
+      .text_center()
+      .child(
+        svg(iconPath)
+          .size(20)
+          .text_color(t.dim)
+          .when(spin, (e) => e.spin(900))
+      )
+      .child(div().text_size(13).text_color(t.muted).child(title))
+      .when(Boolean(hint), (e) =>
+        e.child(div().text_size(12).text_color(t.dim).child(hint))
+      );
+  }
+
+  render(cx) {
+    if (this.mode === "diff") return this.renderDiffTab();
+    if (key() !== this.context) this.refresh(cx);
+
+    const t = theme();
+    const allFiles = [...this.staged, ...this.unstaged];
+    const isAmend = this.commitMode === "amend";
+    const canCommit = Boolean(
+      this.message.trim() &&
+        this.root &&
+        !this.busy &&
+        !this.loading &&
+        (allFiles.length > 0 || isAmend)
+    );
+    const activeModeObj =
+      COMMIT_MODES.find((m) => m.id === this.commitMode) ?? COMMIT_MODES[0];
+
+    const sum = (list) => ({
+      add: list.reduce((n, f) => n + (f.add || 0), 0),
+      del: list.reduce((n, f) => n + (f.del || 0), 0),
+    });
+
+    const fetching = this.busy && this.busyAction === "Fetch";
+    const scopeToggle = div()
+      .id("sc-graph-scope")
+      .h(20)
+      .px(6)
+      .flex()
+      .items_center()
+      .rounded(4)
+      .cursor_pointer()
+      .text_size(10.5)
+      .text_color(this.allBranches ? t.accent : t.muted)
+      .when(this.allBranches, (e) => e.bg(t.accent + "1f"))
+      .hover((s) => s.bg(t.hover).text_color(t.foreground))
+      .tooltip(
+        this.allBranches
+          ? `${tr("sc.all_branches")} — click for current branch only`
+          : `${tr("sc.current_branch")} — click for all branches`
+      )
+      .on_mouse_down("left", (_ev, cx) => {
+        cx.stop_propagation();
+        this.allBranches = !this.allBranches;
+        localStorage.setItem("sc.allBranches", this.allBranches ? "1" : "0");
+        this.refresh(cx);
+        cx.notify();
+      })
+      .child(this.allBranches ? "All" : "Branch");
+
+    this.used = 12;
+    const clean = !this.staged.length && !this.unstaged.length;
+    const graphOpen = !this.collapsed.has("log");
+    const workOpen = !this.collapsed.has("work");
+    const stagedOpen = this.staged.length > 0 && !this.collapsed.has("staged");
+    const workFills = !graphOpen && workOpen;
+    const stagedFills = !graphOpen && !workOpen && stagedOpen;
+    const needsBottomSpacer = !graphOpen && !workOpen && !stagedOpen;
+
+    const sections =
+      this.error === tr("sc.not_git")
+        ? [
+            this.renderNotice(
+              ICON.branch,
+              tr("sc.not_git"),
+              "Focus a folder inside a git repository.",
+              t
+            ),
+          ]
+        : this.error
+        ? [this.renderNotice(ICON.close, "Cannot read repository", this.error, t)]
+        : !this.root
+        ? [
+            this.loading
+              ? this.renderNotice(ICON.spinner, "Loading…", "", t, true)
+              : this.renderNotice(
+                  ICON.folder,
+                  "No folder",
+                  "Focus a terminal or pane that has a folder.",
+                  t
+                ),
+          ]
+        : [
+            ...(this.staged.length
+              ? this.renderSection(
+                  "staged",
+                  tr("sc.staged_changes"),
+                  this.staged.length,
+                  sum(this.staged),
+                  [
+                    this.iconBtn(
+                      "sc-unstage-all",
+                      ICON.minus,
+                      tr("sc.unstage_all"),
+                      (cx) => this.unstageAll(cx),
+                      t
+                    ),
+                  ],
+                  () => this.renderFileRows(this.staged, "staged", t, ""),
+                  t,
+                  stagedFills ? { fill: true } : { cap: this.caps.staged }
+                )
+              : []),
+            ...this.renderSection(
+              "work",
+              tr("sc.changes"),
+              this.unstaged.length,
+              sum(this.unstaged),
+              this.unstaged.length
+                ? [
+                    this.iconBtn(
+                      "sc-discard-all",
+                      ICON.undo,
+                      tr("sc.discard_all"),
+                      (cx) => this.askDiscard(this.unstaged, cx),
+                      t
+                    ),
+                    this.iconBtn(
+                      "sc-stage-all",
+                      ICON.plus,
+                      tr("sc.stage_all"),
+                      (cx) => this.stageAll(cx),
+                      t
+                    ),
+                  ]
+                : [],
+              () =>
+                this.renderFileRows(
+                  this.unstaged,
+                  "work",
+                  t,
+                  clean ? "Working tree clean" : "All changes are staged"
+                ),
+              t,
+              workFills ? { fill: true } : { cap: this.caps.work }
+            ),
+            ...(needsBottomSpacer ? [div().flex_1()] : []),
+            ...this.renderSection(
+              "log",
+              tr("sc.graph"),
+              this.commits.length >= MAX_COMMITS
+                ? `${MAX_COMMITS}+`
+                : this.commits.length,
+              null,
+              [
+                scopeToggle,
+                this.iconBtn(
+                  "sc-graph-fetch",
+                  ICON.cloud,
+                  tr("sc.fetch"),
+                  (cx) => this.gitAction(["fetch", "--prune"], cx, "Fetch"),
+                  t,
+                  { spin: fetching, color: fetching ? t.accent : null }
+                ),
+              ],
+              () => this.renderGraph(t),
+              t,
+              { fill: true }
+            ),
+          ];
+
+    this.spare = Math.max(0, (this.listHeight ?? 480) - this.used - 120);
 
     return v_flex()
       .id("source-control")
@@ -1815,19 +2350,19 @@ export default class JamesChanges extends View {
       .text_size(13)
       .track_focus(this.handle)
       .on_key_down((e, cx) => {
-        if (e.key === "escape") {
-          if (this.showCommitMenu) {
-            this.showCommitMenu = false;
-            cx.stop_propagation();
-            cx.notify();
-            return;
-          }
-          if (this.typing) {
-            this.typing = false;
-            this.handle.focus();
-            cx.stop_propagation();
-            cx.notify();
-          }
+        if (e.key !== "escape") return;
+        if (this.showCommitMenu || this.asking) {
+          this.showCommitMenu = false;
+          this.asking = null;
+          cx.stop_propagation();
+          cx.notify();
+          return;
+        }
+        if (this.typing) {
+          this.typing = false;
+          this.handle.focus();
+          cx.stop_propagation();
+          cx.notify();
         }
       })
       .on_mouse_move((e, cx) => {
@@ -1843,26 +2378,13 @@ export default class JamesChanges extends View {
           }
           return;
         }
-        if (this.resizingGraph) {
-          const delta = e.position.y - this.resizingGraph.startY;
-          const nextH = Math.max(
-            80,
-            Math.min(540, Math.round(this.resizingGraph.startH - delta))
+        if (this.drag) {
+          const d = this.drag;
+          const next = Math.round(
+            Math.min(d.max, Math.max(30, d.start + e.position.y - d.y))
           );
-          if (nextH !== this.graphHeight) {
-            this.graphHeight = nextH;
-            cx.notify();
-          }
-          return;
-        }
-        if (this.resizingDiff) {
-          const delta = e.position.y - this.resizingDiff.startY;
-          const nextH = Math.max(
-            110,
-            Math.min(480, Math.round(this.resizingDiff.startH - delta))
-          );
-          if (nextH !== this.diffHeight) {
-            this.diffHeight = nextH;
+          if (next !== this.caps[d.id]) {
+            this.caps[d.id] = next;
             cx.notify();
           }
         }
@@ -1873,770 +2395,131 @@ export default class JamesChanges extends View {
           setShared("james-changes.commitHeight", this.commitHeight);
           cx.notify();
         }
-        if (this.resizingGraph) {
-          this.resizingGraph = null;
-          setShared("james-changes.graphHeight", this.graphHeight);
-          cx.notify();
-        }
-        if (this.resizingDiff) {
-          this.resizingDiff = null;
-          setShared("james-changes.diffHeight", this.diffHeight);
-          cx.notify();
-        }
+        this.endDrag(cx);
       })
-      .child(
-        // Top Panel Header: Source Control + Branch Worktree
-        h_flex()
-          .h(38)
-          .flex_none()
-          .px(12)
-          .gap(8)
-          .items_center()
-          .rounded_t(9)
-          .border_b(1)
-          .border_color(t.border)
-          .bg(t.chrome ?? t.background)
-          .child(
-            div()
-              .font_semibold()
-              .text_size(13)
-              .text_color(t.foreground)
-              .child(tr("sc.title"))
-          )
-          .child(div().flex_1())
-          .child(tipAbove("sc-branch", tr("sc.switch_branch"), branchBtn, t))
-      )
-      .child(
-        // Always-visible Commit Composer
-        v_flex()
-          .flex_none()
-          .px(8)
-          .pt(8)
-          .pb(4)
-          .gap(6)
-          .bg(t.background)
-          .child(
-            div()
-              .id("sc-commit-input-wrapper")
-              .h(this.commitHeight)
-              .p(7)
-              .relative()
-              .rounded(7)
-              .border_1()
-              .border_color(this.typing ? t.accent : t.border)
-              .bg(t.canvas ?? t.background)
-              .cursor_text()
-              .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
-              .child(
-                Textarea.new(this.input)
-                  .size_full()
-                  .text_size(12)
-                  .text_color(t.foreground)
-              )
-              .child(
-                h_flex()
-                  .absolute()
-                  .right(6)
-                  .bottom(6)
-                  .gap(4)
-                  .items_center()
-                  .child(
-                    h_flex()
-                      .id("sc-ai-space-cfg")
-                      .w(22)
-                      .h(22)
-                      .rounded(5)
-                      .items_center()
-                      .justify_center()
-                      .border_1()
-                      .border_color(t.border)
-                      .bg(t.raised)
-                      .cursor_pointer()
-                      .hover((s) => s.bg(t.hover))
-                      .on_mouse_down("left", (_ev, cx) => {
-                        cx.stop_propagation();
-                        const activeSpace = spaces().find((s) => s.active);
-                        const spaceKey = activeSpace?.folder || this.root || activeSpace?.id || "__global__";
-                        openOverlay({
-                          mod: "james-settings",
-                          kind: "dialog",
-                          width: 600,
-                          height: 500,
-                          props: { section: "ai-commit", spaceKey },
-                        });
-                      })
-                      .child(svg(ICON.sliders).size(11).text_color(t.muted))
-                  )
-                  .child(
-                    h_flex()
-                      .id("sc-ai-generate-btn")
-                      .h(22)
-                      .px(8)
-                      .gap(4)
-                      .rounded(5)
-                      .items_center()
-                      .border_1()
-                      .border_color(t.border)
-                      .bg(t.raised)
-                      .text_size(11)
-                      .text_color(this.generating ? t.accent : t.muted)
-                      .cursor_pointer()
-                      .hover((s) => s.bg(t.hover).text_color(t.foreground))
-                      .on_mouse_down("left", (_ev, cx) => {
-                        cx.stop_propagation();
-                        this.generateAiCommit(cx);
-                      })
-                      .child(
-                        this.generating
-                          ? svg(ICON.spinner)
-                              .size(11)
-                              .text_color(t.accent)
-                              .spin(900)
-                          : svg(ICON.sparkles).size(11).text_color(t.accent)
-                      )
-                      .child(
-                        div().child(this.generating ? tr("sc.generating") : tr("sc.generate"))
-                      )
-                  )
-              )
-              .child(
-                // Subtle bottom-edge resize zone on the textarea itself
-                div()
-                  .id("sc-textarea-edge-resizer")
-                  .absolute()
-                  .left(0)
-                  .right(0)
-                  .bottom(0)
-                  .h(4)
-                  .cursor_row_resize()
-                  .on_hover((hovered, cx) => {
-                    this.hoverCommitResizer = hovered;
-                    cx.notify();
-                  })
-                  .on_mouse_down("left", (e, cx) => {
-                    cx.stop_propagation();
-                    this.resizingCommit = {
-                      startY: e.position.y,
-                      startH: this.commitHeight,
-                    };
-                    cx.notify();
-                  })
-              )
-          )
-          .child(
-            Popup.new("sc-commit-actions-popup", splitCommitButton)
-              .anchor("bottom_right")
-              .when(this.showCommitMenu, (el) =>
-                el.content(
-                  v_flex()
-                    .id("sc-commit-actions-menu")
-                    .w(190)
-                    .p(4)
-                    .gap(2)
-                    .rounded(7)
-                    .border_1()
-                    .border_color(t.border)
-                    .bg(t.popover ?? t.raised)
-                    .on_mouse_down_out((_e, cx) => {
-                      this.showCommitMenu = false;
-                      cx.notify();
-                    })
-                    .children(
-                      COMMIT_MODES.map((m) => {
-                        const active = this.commitMode === m.id;
-                        return h_flex()
-                          .id(`sc-mode-${m.id}`)
-                          .h(26)
-                          .px(8)
-                          .gap(7)
-                          .rounded(5)
-                          .items_center()
-                          .cursor_pointer()
-                          .when(active, (item) => item.bg(t.selected))
-                          .hover((s) => s.bg(t.hover))
-                          .on_mouse_down("left", (_ev, cx) => {
-                            cx.stop_propagation();
-                            this.selectCommitMode(m.id, cx);
-                          })
-                          .child(
-                            active
-                              ? svg(ICON.check)
-                                  .size(11)
-                                  .flex_none()
-                                  .text_color(t.accent)
-                              : div().w(11).flex_none()
-                          )
-                          .child(div().text_size(11.5).child(tr(m.labelKey)));
-                      })
-                    )
-                )
-              )
-          )
-      )
-      .when(Boolean(this.note), (e) =>
-        e.child(
-          div()
-            .px(10)
-            .py(4)
-            .flex_none()
-            .text_size(11)
-            .text_color(t.ansi1)
-            .child(this.note)
-        )
-      )
-      .child(
-        // 1px Row Resizer for Commit Textarea
-        this.renderRowResizer(
-          "sc-commit-resizer",
-          Boolean(this.resizingCommit),
-          this.hoverCommitResizer,
-          (hovered, cx) => {
-            this.hoverCommitResizer = hovered;
-            cx.notify();
-          },
-          (e, cx) => {
-            cx.stop_propagation();
-            this.resizingCommit = {
-              startY: e.position.y,
-              startH: this.commitHeight,
-            };
-            cx.notify();
-          },
-          t
-        )
-      )
+      .child(this.renderHeader(t))
+      .child(this.renderComposer(t, canCommit, activeModeObj))
       .child(
         v_flex()
           .id("sc-sections-area")
           .flex_1()
           .min_h(0)
           .w_full()
+          .p(6)
+          .gap(2)
           .overflow_hidden()
-          .when(hasStaged, (panel) => {
-                const unstageAllBtn = h_flex()
-                  .id("sc-unstage-all")
-                  .w(18)
-                  .h(18)
-                  .rounded(4)
-                  .items_center()
-                  .justify_center()
-                  .hover((s) => s.bg(t.surface))
-                  .on_mouse_down("left", (_ev, cx) => {
-                    cx.stop_propagation();
-                    this.unstageAll(cx);
-                  })
-                  .child(svg(ICON.minus).size(11).text_color(t.muted));
-
-                return panel
-                  .child(
-                    // Staged Changes Section Header (matching Graph aesthetic)
-                    h_flex()
-                      .id("sc-staged-section-head")
-                      .h(26)
-                      .flex_none()
-                      .px(10)
-                      .gap(5)
-                      .items_center()
-                      .cursor_pointer()
-                      .bg(t.surface ?? t.background)
-                      .border_b(1)
-                      .border_color(t.border)
-                      .hover((s) => s.bg(t.hover))
-                      .on_mouse_down("left", (_ev, cx) => {
-                        cx.stop_propagation();
-                        this.foldStaged = !this.foldStaged;
-                        cx.notify();
-                      })
-                      .child(
-                        svg(
-                          this.foldStaged
-                            ? ICON.chevronRight
-                            : ICON.chevronDown
-                        )
-                          .size(11)
-                          .text_color(t.muted)
-                      )
-                      .child(
-                        div()
-                          .flex_1()
-                          .text_size(11.5)
-                          .font_weight(600)
-                          .text_color(t.muted)
-                          .child(tr("sc.staged_changes"))
-                      )
-                      .when(stagedAdd > 0, (e) =>
-                        e.child(
-                          div()
-                            .text_size(10.5)
-                            .text_color(t.ansi2)
-                            .child(`+${stagedAdd}`)
-                        )
-                      )
-                      .when(stagedDel > 0, (e) =>
-                        e.child(
-                          div()
-                            .text_size(10.5)
-                            .text_color(t.ansi1)
-                            .child(`−${stagedDel}`)
-                        )
-                      )
-                      .child(
-                        tipAbove(
-                          "unstage-all",
-                          tr("sc.unstage_all"),
-                          unstageAllBtn,
-                          t
-                        )
-                      )
-                      .child(
-                        div()
-                          .px(5)
-                          .rounded(6)
-                          .bg(t.raised)
-                          .text_size(10.5)
-                          .text_color(t.muted)
-                          .child(String(this.staged.length))
-                      )
-                  )
-                  .when(!this.foldStaged, (el) =>
-                    el.child(
-                      v_flex()
-                        .id("sc-staged-scroll")
-                        .w_full()
-                        .max_h(160)
-                        .min_h(34)
-                        .overflow_y_scroll()
-                        .track_scroll(this.stagedScroll)
-                        .p(4)
-                        .gap(1)
-                        .children(
-                          this.staged.map((f) => this.renderFileRow(f, t))
-                        )
-                    )
-                  );
-              })
-              .child(
-                // Changes Section Header (matching Graph aesthetic)
-                (() => {
-                  const stageAllBtn = h_flex()
-                    .id("sc-stage-all")
-                    .w(18)
-                    .h(18)
-                    .rounded(4)
-                    .items_center()
-                    .justify_center()
-                    .hover((s) => s.bg(t.surface))
-                    .on_mouse_down("left", (_ev, cx) => {
-                      cx.stop_propagation();
-                      this.stageAll(cx);
-                    })
-                    .child(svg(ICON.plus).size(11).text_color(t.muted));
-
-                  return h_flex()
-                    .id("sc-changes-section-head")
-                    .h(26)
-                    .flex_none()
-                    .px(10)
-                    .gap(5)
-                    .items_center()
-                    .cursor_pointer()
-                    .bg(t.surface ?? t.background)
-                    .when(hasStaged && !this.foldStaged, (e) =>
-                      e.border_t(1).border_color(t.border)
-                    )
-                    .when(!this.foldUnstaged, (e) =>
-                      e.border_b(1).border_color(t.border)
-                    )
-                    .hover((s) => s.bg(t.hover))
-                    .on_mouse_down("left", (_ev, cx) => {
-                      cx.stop_propagation();
-                      this.foldUnstaged = !this.foldUnstaged;
-                      cx.notify();
-                    })
-                    .child(
-                      svg(
-                        this.foldUnstaged
-                          ? ICON.chevronRight
-                          : ICON.chevronDown
-                      )
-                        .size(11)
-                        .text_color(t.muted)
-                    )
-                    .child(
-                      div()
-                        .flex_1()
-                        .text_size(11.5)
-                        .font_weight(600)
-                        .text_color(t.muted)
-                        .child(tr("sc.changes"))
-                    )
-                    .when(unstagedAdd > 0, (e) =>
-                      e.child(
-                        div()
-                          .text_size(10.5)
-                          .text_color(t.ansi2)
-                          .child(`+${unstagedAdd}`)
-                      )
-                    )
-                    .when(unstagedDel > 0, (e) =>
-                      e.child(
-                        div()
-                          .text_size(10.5)
-                          .text_color(t.ansi1)
-                          .child(`−${unstagedDel}`)
-                      )
-                    )
-                    .when(this.unstaged.length > 0, (e) =>
-                      e.child(
-                        tipAbove(
-                          "stage-all",
-                          tr("sc.stage_all"),
-                          stageAllBtn,
-                          t
-                        )
-                      )
-                    )
-                    .child(
-                      div()
-                        .px(5)
-                        .rounded(6)
-                        .bg(t.raised)
-                        .text_size(10.5)
-                        .text_color(t.muted)
-                        .child(String(this.unstaged.length))
-                    );
-                })()
-              )
-              .when(!this.foldUnstaged, (el) =>
-                el.child(
-                  v_flex()
-                    .id("sc-files-scroll")
-                    .flex_1()
-                    .min_h(0)
-                    .w_full()
-                    .overflow_y_scroll()
-                    .track_scroll(this.filesScroll)
-                    .p(4)
-                    .gap(1)
-                    .children(
-                      this.unstaged.map((f) => this.renderFileRow(f, t))
-                    )
-                    .when(this.unstaged.length === 0, (e) =>
-                      e.child(
-                        div()
-                          .p(8)
-                          .text_size(11.5)
-                          .text_color(t.dim)
-                          .child(
-                            this.error ||
-                              (this.loading
-                                ? "Checking changes…"
-                                : this.root
-                                ? hasStaged
-                                  ? "All changes are staged"
-                                  : "No uncommitted changes"
-                                : "No folder")
-                          )
-                      )
-                    )
-                )
-              )
-              .when(showGraphResizer, (panel) =>
-                panel.child(
-                  this.renderRowResizer(
-                    "sc-graph-resizer",
-                    Boolean(this.resizingGraph),
-                    this.hoverGraphResizer,
-                    (hovered, cx) => {
-                      this.hoverGraphResizer = hovered;
-                      cx.notify();
-                    },
-                    (e, cx) => {
-                      cx.stop_propagation();
-                      this.resizingGraph = {
-                        startY: e.position.y,
-                        startH: this.graphHeight,
-                      };
-                      cx.notify();
-                    },
-                    t
-                  )
-                )
-              )
-              .child(
-                // Section Header: Graph
-                (() => {
-                  const pullBtn = h_flex()
-                    .id("sc-graph-pull")
-                    .h(18)
-                    .px(4)
-                    .gap(3)
-                    .rounded(4)
-                    .items_center()
-                    .hover((s) => s.bg(t.surface))
-                    .on_mouse_down("left", (_ev, cx) => {
-                      cx.stop_propagation();
-                      this.gitAction(["pull", "--ff-only"], cx, "Pull");
-                    })
-                    .child(
-                      this.busy && this.busyAction === "Pull"
-                        ? svg(ICON.spinner).size(11).text_color(t.accent).spin(900)
-                        : svg(ICON.arrowDown)
-                            .size(11)
-                            .text_color(this.behind > 0 ? t.accent : t.muted)
-                    )
-                    .when(this.behind > 0, (e) =>
-                      e.child(
-                        div()
-                          .text_size(10)
-                          .text_color(t.accent)
-                          .child(String(this.behind))
-                      )
-                    );
-
-                  const pushBtn = h_flex()
-                    .id("sc-graph-push")
-                    .h(18)
-                    .px(4)
-                    .gap(3)
-                    .rounded(4)
-                    .items_center()
-                    .hover((s) => s.bg(t.surface))
-                    .on_mouse_down("left", (_ev, cx) => {
-                      cx.stop_propagation();
-                      this.gitAction(
-                        this.hasUpstream
-                          ? ["push"]
-                          : ["push", "-u", "origin", "HEAD"],
-                        cx,
-                        "Push"
-                      );
-                    })
-                    .child(
-                      this.busy && this.busyAction === "Push"
-                        ? svg(ICON.spinner).size(11).text_color(t.accent).spin(900)
-                        : svg(ICON.arrowUp)
-                            .size(11)
-                            .text_color(this.ahead > 0 ? t.accent : t.muted)
-                    )
-                    .when(this.ahead > 0, (e) =>
-                      e.child(
-                        div()
-                          .text_size(10)
-                          .text_color(t.accent)
-                          .child(String(this.ahead))
-                      )
-                    );
-
-                  const refreshBtn = h_flex()
-                    .id("sc-graph-refresh")
-                    .w(18)
-                    .h(18)
-                    .rounded(4)
-                    .items_center()
-                    .justify_center()
-                    .hover((s) => s.bg(t.surface))
-                    .on_mouse_down("left", (_ev, cx) => {
-                      cx.stop_propagation();
-                      this.gitAction(["fetch", "--prune"], cx, "Fetch");
-                    })
-                    .child(
-                      this.busy && this.busyAction === "Fetch"
-                        ? svg(ICON.spinner).size(11).text_color(t.accent).spin(900)
-                        : svg(ICON.refresh).size(11).text_color(t.muted)
-                    );
-
-                  return h_flex()
-                    .id("sc-graph-section-head")
-                    .h(26)
-                    .flex_none()
-                    .px(10)
-                    .gap(5)
-                    .items_center()
-                    .cursor_pointer()
-                    .bg(t.surface ?? t.background)
-                    .when(!showGraphResizer, (e) =>
-                      e.border_t(1).border_color(t.border)
-                    )
-                    .when(graphHeaderHasBottomBorder, (e) =>
-                      e.border_b(1).border_color(t.border)
-                    )
-                    .hover((s) => s.bg(t.hover))
-                    .on_mouse_down("left", (_ev, cx) => {
-                      cx.stop_propagation();
-                      this.foldGraphSection = !this.foldGraphSection;
-                      cx.notify();
-                    })
-                    .child(
-                      svg(
-                        this.foldGraphSection
-                          ? ICON.chevronRight
-                          : ICON.chevronDown
-                      )
-                        .size(11)
-                        .text_color(t.muted)
-                    )
-                    .child(
-                      div()
-                        .flex_1()
-                        .text_size(11.5)
-                        .font_weight(600)
-                        .text_color(t.muted)
-                        .child(tr("sc.graph"))
-                    )
-                    .child(tipAbove("graph-pull", tr("sc.pull"), pullBtn, t))
-                    .child(tipAbove("graph-push", tr("sc.push"), pushBtn, t))
-                    .child(
-                      tipAbove(
-                        "graph-refresh",
-                        tr("sc.fetch_refresh"),
-                        refreshBtn,
-                        t
-                      )
-                    )
-                    .child(
-                      div()
-                        .px(5)
-                        .rounded(6)
-                        .bg(t.raised)
-                        .text_size(10.5)
-                        .text_color(t.muted)
-                        .child(String(this.commits.length))
-                    );
-                })()
-              )
-              .when(!this.foldGraphSection, (el) =>
-                el.child(
-                  v_flex()
-                    .id("sc-graph-scroll")
-                    .w_full()
-                    .when(this.foldUnstaged, (e) => e.flex_1().min_h(0))
-                    .when(!this.foldUnstaged, (e) =>
-                      e.flex_none().h(this.graphHeight)
-                    )
-                    .overflow_y_scroll()
-                    .track_scroll(this.graphScroll)
-                    .p(4)
-                    .gap(1)
-                    .children(this.renderCommitRows(t))
-                )
-              )
-              .when(allSectionsFolded && !this.open, (panel) =>
-                panel.child(div().flex_1())
-              )
-      )
-      .when(Boolean(this.open), (panel) => {
-        const closeDiffBtn = h_flex()
-          .id("sc-close-diff")
-          .w(20)
-          .h(20)
-          .rounded(4)
-          .items_center()
-          .justify_center()
-          .cursor_pointer()
-          .hover((s) => s.bg(t.hover))
-          .on_mouse_down("left", (_ev, cx) => {
-            cx.stop_propagation();
-            this.open = null;
-            this.setLines([]);
-            cx.notify();
+          .on_scroll_wheel(() => {
+            this.wheelAt = Date.now();
           })
-          .child(svg(ICON.close).size(11).text_color(t.muted));
-
-        return panel
-          .child(
-            this.renderRowResizer(
-              "sc-diff-resizer",
-              Boolean(this.resizingDiff),
-              this.hoverDiffResizer,
-              (hovered, cx) => {
-                this.hoverDiffResizer = hovered;
-                cx.notify();
-              },
-              (e, cx) => {
-                cx.stop_propagation();
-                this.resizingDiff = {
-                  startY: e.position.y,
-                  startH: this.diffHeight,
-                };
-                cx.notify();
-              },
-              t
+          .on_hover((on, cx) => {
+            if (!on) this.endDrag(cx);
+          })
+          .on_size_change((size, cx) => {
+            if (size.height !== this.listHeight) {
+              this.listHeight = size.height;
+              cx.notify();
+            }
+          })
+          .children(sections)
+      )
+      .when(Boolean(this.asking), (e) =>
+        e.child(
+          h_flex()
+            .flex_none()
+            .pl(10)
+            .pr(6)
+            .py(6)
+            .gap(6)
+            .items_center()
+            .rounded_b(9)
+            .bg(t.ansi1 + "18")
+            .border_t(1)
+            .border_color(t.border)
+            .child(
+              div()
+                .flex_1()
+                .min_w(0)
+                .text_size(11.5)
+                .text_color(t.foreground)
+                .child(this.asking?.text ?? "")
             )
-          )
-          .child(
-            // Collapsible File Diff Inspector at the bottom
-            v_flex()
-              .flex_none()
-              .h(this.diffHeight + 26)
-              .child(
-                h_flex()
-                  .h(26)
-                  .flex_none()
-                  .px(10)
-                  .gap(6)
-                  .items_center()
-                  .bg(t.surface ?? t.raised)
-                  .border_b(1)
-                  .border_color(t.border)
-                  .child(
-                    div()
-                      .flex_1()
-                      .min_w(0)
-                      .truncate()
-                      .text_size(11.5)
-                      .font_weight(500)
-                      .text_color(t.foreground)
-                      .child(
-                        this.open.commit
-                          ? `${this.open.path} (${this.open.commit})`
-                          : `${this.open.path} (${
-                              this.open.staged ? tr("sc.staged_badge") : tr("sc.working_tree_badge")
-                            })`
-                      )
-                  )
-                  .child(tipAbove("close-diff", tr("sc.close_diff"), closeDiffBtn, t))
+            .child(
+              div()
+                .id("sc-ask-cancel")
+                .h(24)
+                .px(8)
+                .flex()
+                .items_center()
+                .rounded(5)
+                .cursor_pointer()
+                .text_size(11.5)
+                .hover((s) => s.bg(t.hover))
+                .on_mouse_down("left", (_ev, cx) => {
+                  cx.stop_propagation();
+                  this.asking = null;
+                  cx.notify();
+                })
+                .child(tr("sc.cancel"))
+            )
+            .child(
+              div()
+                .id("sc-ask-confirm")
+                .h(24)
+                .px(8)
+                .flex()
+                .items_center()
+                .rounded(5)
+                .cursor_pointer()
+                .text_size(11.5)
+                .font_weight(500)
+                .bg(t.ansi1)
+                .text_color(t.background)
+                .hover((s) => s.opacity(0.88))
+                .on_mouse_down("left", (_ev, cx) => {
+                  cx.stop_propagation();
+                  this.gitActions(this.asking.actions, cx, "Discard changes");
+                })
+                .child(tr("sc.confirm_discard"))
+            )
+        )
+      )
+      .when(Boolean(this.note), (e) =>
+        e.child(
+          h_flex()
+            .flex_none()
+            .pl(10)
+            .pr(6)
+            .py(4)
+            .gap(6)
+            .items_start()
+            .rounded_b(9)
+            .bg(t.ansi1 + "14")
+            .border_t(1)
+            .border_color(t.border)
+            .child(
+              div()
+                .flex_1()
+                .min_w(0)
+                .py(2)
+                .text_size(11)
+                .text_color(t.ansi1)
+                .child(this.note ?? "")
+            )
+            .child(
+              this.iconBtn(
+                "sc-close-note",
+                ICON.close,
+                "Dismiss",
+                (cx) => {
+                  this.note = null;
+                  cx.notify();
+                },
+                t
               )
-              .child(
-                div()
-                  .flex_1()
-                  .min_h(0)
-                  .relative()
-                  .bg(t.canvas ?? t.background)
-                  .font_family(settings().font_family ?? "JetBrains Mono")
-                  .text_size(11)
-                  .child(
-                    div()
-                      .id("changes-diff-x")
-                      .size_full()
-                      .overflow_x_scrollbar()
-                      .child(
-                        div()
-                          .w_full()
-                          .min_w(this.diffWidth)
-                          .h_full()
-                          .child(
-                            v_virtual_list(
-                              "changes-diff",
-                              this.rows.length,
-                              20,
-                              (i) => String(i),
-                              (range) =>
-                                this.rows
-                                  .slice(range.start, range.end)
-                                  .map((row) => this.diffRow(row, t))
-                            ).size_full()
-                          )
-                      )
-                  )
-                  .child(
-                    Scrollbar.vertical("changes-diff")
-                      .viewport_from_layout()
-                      .absolute()
-                      .inset_0()
-                  )
-              )
-          );
-      });
+            )
+        )
+      );
   }
 }
+
+Object.assign(JamesChanges.prototype, diffTabMethods);
