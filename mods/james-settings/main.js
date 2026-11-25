@@ -21,6 +21,9 @@ import {
   checking,
   run,
   spaces,
+  readTextFile,
+  writeTextFile,
+  appHome,
 } from "herdr";
 import { tr, supportedLangs, currentLang } from "./i18n.js";
 
@@ -231,10 +234,79 @@ export default class JamesSettings extends View {
       this.save();
     });
 
+    this.sidebarCfg = { combined: true, pull_request_status: true, agent_name: "tab" };
+    this.filesCfg = { gutter: true, markdown: "preview", refresh: { tree: "10s", file: "2s" } };
+    this.alertsCfg = { blocked: true, done: true };
+
     if (checking()) return;
     this.discoverAgents(cx);
     if (this.provider) this.discoverModels(this.provider, cx);
     this.checkOmarchyStatus(cx);
+    this.loadExternalModConfigs(cx);
+  }
+
+  loadExternalModConfigs(cx) {
+    cx.spawn(async (spawnCx) => {
+      try {
+        const [sbRaw, bfRaw, baRaw] = await Promise.all([
+          readTextFile(`${appHome()}/mods/better-sidebar/mod.json`).catch(() => null),
+          readTextFile(`${appHome()}/mods/better-files/mod.json`).catch(() => null),
+          readTextFile(`${appHome()}/mods/better-alerts/mod.json`).catch(() => null),
+        ]);
+        if (sbRaw) {
+          const s = JSON.parse(sbRaw).settings ?? {};
+          this.sidebarCfg = {
+            combined: s.combined !== false,
+            pull_request_status: s.pull_request_status !== false,
+            agent_name: s.agent_name === "title" ? "title" : "tab",
+          };
+        }
+        if (bfRaw) {
+          const f = JSON.parse(bfRaw).settings ?? {};
+          this.filesCfg = {
+            gutter: f.gutter !== false,
+            markdown: f.markdown === "code" ? "code" : "preview",
+            refresh: {
+              tree: f.refresh?.tree ?? "10s",
+              file: f.refresh?.file ?? "2s",
+            },
+          };
+        }
+        if (baRaw) {
+          const a = JSON.parse(baRaw).settings?.alerts ?? {};
+          this.alertsCfg = {
+            blocked: a.blocked !== false,
+            done: a.done !== false,
+          };
+        }
+        spawnCx.notify();
+      } catch {
+        // ignore
+      }
+    });
+  }
+
+  saveExternalModConfig(modName, patch, cx) {
+    cx.spawn(async (spawnCx) => {
+      try {
+        const path = `${appHome()}/mods/${modName}/mod.json`;
+        const raw = await readTextFile(path);
+        const doc = raw ? JSON.parse(raw) : {};
+        const prev = doc.settings && typeof doc.settings === "object" ? doc.settings : {};
+        const nextSettings = { ...prev, ...patch };
+        if (patch.refresh && prev.refresh) {
+          nextSettings.refresh = { ...prev.refresh, ...patch.refresh };
+        }
+        if (patch.alerts && prev.alerts) {
+          nextSettings.alerts = { ...prev.alerts, ...patch.alerts };
+        }
+        doc.settings = nextSettings;
+        await writeTextFile(path, JSON.stringify(doc, null, 2) + "\n", raw);
+        spawnCx.notify();
+      } catch {
+        // ignore
+      }
+    });
   }
 
   checkOmarchyStatus(cx) {
@@ -1026,12 +1098,13 @@ export default class JamesSettings extends View {
                   .text_color(t.dim)
                   .child(tr("set.modules"))
               )
-              .child(navItem("default-agent", ICON.sparkles, tr("set.nav_default_agent")))
-              .child(navItem("ai-commit", ICON.sliders, tr("set.nav_ai_commit")))
-              .child(navItem("files", ICON.sliders, tr("set.nav_files")))
-              .child(navItem("language", ICON.refresh, tr("set.nav_language")))
+              .child(navItem("default-agent", ICON.sparkles, "Default Agent"))
+              .child(navItem("ai-commit", ICON.sliders, "AI Commit"))
+              .child(navItem("sidebar", ICON.sliders, "Sidebar"))
+              .child(navItem("files", ICON.sliders, "Files"))
+              .child(navItem("alerts", ICON.sparkles, "Alerts"))
               .when(this.omarchyInfo.supported, (sb) =>
-                sb.child(navItem("omarchy", ICON.refresh, tr("set.nav_omarchy")))
+                sb.child(navItem("omarchy", ICON.refresh, "Omarchy"))
               )
           )
           .when(this.section === "default-agent", (panel) =>
@@ -1443,9 +1516,8 @@ export default class JamesSettings extends View {
               )
             )
           )
-          .when(this.section === "files", (panel) => {
-            const autoSave = shared("james-files.autoSave") !== false;
-            const delay = Number(shared("james-files.autoSaveDelay") ?? 1000);
+          .when(this.section === "sidebar", (panel) => {
+            const sb = this.sidebarCfg;
             const chip = (id, label, active, onClick) =>
               h_flex()
                 .id(id)
@@ -1467,9 +1539,7 @@ export default class JamesSettings extends View {
                   onClick(cx);
                 })
                 .child(div().child(label))
-                .when(active, (el) =>
-                  el.child(svg(ICON.check).size(12).text_color(t.accent))
-                );
+                .when(active, (el) => el.child(svg(ICON.check).size(12).text_color(t.accent)));
             return panel.child(
               v_flex()
                 .flex_1()
@@ -1483,129 +1553,272 @@ export default class JamesSettings extends View {
                 .overflow_y_scroll()
                 .child(
                   v_flex()
-                    .w_full()
-                    .min_w(0)
                     .gap(4)
+                    .child(div().text_size(12.5).font_weight(600).text_color(t.foreground).child("Sidebar (Better Sidebar)"))
+                    .child(div().text_size(11.5).text_color(t.muted).child("Controls Spaces, Agents, PR status badges, and worktree grouping."))
+                )
+                .child(
+                  v_flex()
+                    .gap(8)
+                    .child(div().text_size(12).font_weight(600).text_color(t.foreground).child("Spaces & Agents layout"))
                     .child(
-                      div()
-                        .w_full()
-                        .text_size(12.5)
-                        .font_weight(600)
-                        .text_color(t.foreground)
-                        .child(tr("set.files_title"))
-                    )
-                    .child(
-                      div()
-                        .w_full()
-                        .text_size(11.5)
-                        .text_color(t.muted)
-                        .child(tr("set.files_desc"))
+                      h_flex()
+                        .gap(8)
+                        .child(
+                          chip("sb-comb-on", "Tabs (Spaces | Agents)", sb.combined, (cx) => {
+                            this.sidebarCfg = { ...sb, combined: true };
+                            this.saveExternalModConfig("better-sidebar", { combined: true }, cx);
+                            cx.notify();
+                          })
+                        )
+                        .child(
+                          chip("sb-comb-off", "Stacked lists", !sb.combined, (cx) => {
+                            this.sidebarCfg = { ...sb, combined: false };
+                            this.saveExternalModConfig("better-sidebar", { combined: false }, cx);
+                            cx.notify();
+                          })
+                        )
                     )
                 )
                 .child(
                   v_flex()
                     .gap(8)
-                    .child(
-                      div()
-                        .text_size(12)
-                        .font_weight(600)
-                        .text_color(t.foreground)
-                        .child(tr("set.files_autosave"))
-                    )
+                    .child(div().text_size(12).font_weight(600).text_color(t.foreground).child("Pull request status colors (via gh)"))
                     .child(
                       h_flex()
                         .gap(8)
-                        .flex_wrap()
                         .child(
-                          chip(
-                            "files-autosave-after",
-                            tr("set.files_autosave_after"),
-                            autoSave,
-                            (cx) => {
-                              setShared("james-files.autoSave", true);
-                              cx.notify();
-                            }
-                          )
+                          chip("sb-pr-on", "On", sb.pull_request_status, (cx) => {
+                            this.sidebarCfg = { ...sb, pull_request_status: true };
+                            this.saveExternalModConfig("better-sidebar", { pull_request_status: true }, cx);
+                            cx.notify();
+                          })
                         )
                         .child(
-                          chip(
-                            "files-autosave-off",
-                            tr("set.files_autosave_off"),
-                            !autoSave,
-                            (cx) => {
-                              setShared("james-files.autoSave", false);
-                              cx.notify();
-                            }
-                          )
+                          chip("sb-pr-off", "Off", !sb.pull_request_status, (cx) => {
+                            this.sidebarCfg = { ...sb, pull_request_status: false };
+                            this.saveExternalModConfig("better-sidebar", { pull_request_status: false }, cx);
+                            cx.notify();
+                          })
                         )
                     )
-                )
-                .when(autoSave, (col) =>
-                  col.child(
-                    v_flex()
-                      .gap(8)
-                      .child(
-                        div()
-                          .text_size(12)
-                          .font_weight(600)
-                          .text_color(t.foreground)
-                          .child(tr("set.files_delay"))
-                      )
-                      .child(
-                        h_flex()
-                          .gap(8)
-                          .flex_wrap()
-                          .children(
-                            [500, 1000, 2000, 3000].map((ms) =>
-                              chip(
-                                `files-delay-${ms}`,
-                                `${ms} ms`,
-                                delay === ms,
-                                (cx) => {
-                                  setShared("james-files.autoSaveDelay", ms);
-                                  cx.notify();
-                                }
-                              )
-                            )
-                          )
-                      )
-                  )
                 )
                 .child(
                   v_flex()
                     .gap(8)
-                    .child(
-                      div()
-                        .text_size(12)
-                        .font_weight(600)
-                        .text_color(t.foreground)
-                        .child(tr("set.files_word_wrap"))
-                    )
+                    .child(div().text_size(12).font_weight(600).text_color(t.foreground).child("Agent row labels"))
                     .child(
                       h_flex()
                         .gap(8)
-                        .flex_wrap()
                         .child(
-                          chip(
-                            "files-wrap-on",
-                            tr("set.files_on"),
-                            Boolean(shared("james-files.wordWrap")),
-                            (cx) => {
-                              setShared("james-files.wordWrap", true);
-                              cx.notify();
-                            }
-                          )
+                          chip("sb-ag-tab", "Tab name", sb.agent_name === "tab", (cx) => {
+                            this.sidebarCfg = { ...sb, agent_name: "tab" };
+                            this.saveExternalModConfig("better-sidebar", { agent_name: "tab" }, cx);
+                            cx.notify();
+                          })
                         )
                         .child(
-                          chip(
-                            "files-wrap-off",
-                            tr("set.files_off"),
-                            !shared("james-files.wordWrap"),
-                            (cx) => {
-                              setShared("james-files.wordWrap", false);
+                          chip("sb-ag-title", "Terminal live title", sb.agent_name === "title", (cx) => {
+                            this.sidebarCfg = { ...sb, agent_name: "title" };
+                            this.saveExternalModConfig("better-sidebar", { agent_name: "title" }, cx);
+                            cx.notify();
+                          })
+                        )
+                    )
+                )
+            );
+          })
+          .when(this.section === "files", (panel) => {
+            const fc = this.filesCfg;
+            const chip = (id, label, active, onClick) =>
+              h_flex()
+                .id(id)
+                .h(30)
+                .px(12)
+                .gap(6)
+                .rounded(7)
+                .items_center()
+                .cursor_pointer()
+                .border_1()
+                .border_color(active ? t.accent : t.border)
+                .bg(active ? t.selected : t.raised)
+                .text_size(12)
+                .font_weight(active ? 500 : 400)
+                .text_color(active ? t.foreground : t.muted)
+                .hover((s) => s.bg(t.hover))
+                .on_mouse_down("left", (_ev, cx) => {
+                  cx.stop_propagation();
+                  onClick(cx);
+                })
+                .child(div().child(label))
+                .when(active, (el) => el.child(svg(ICON.check).size(12).text_color(t.accent)));
+            return panel.child(
+              v_flex()
+                .flex_1()
+                .w_full()
+                .min_w(0)
+                .h_full()
+                .min_h(0)
+                .justify_start()
+                .p(16)
+                .gap(16)
+                .overflow_y_scroll()
+                .child(
+                  v_flex()
+                    .gap(4)
+                    .child(div().text_size(12.5).font_weight(600).text_color(t.foreground).child("Files (Better Files)"))
+                    .child(div().text_size(11.5).text_color(t.muted).child("File browser, center-tab file viewer, Markdown preview, and external editor launch."))
+                )
+                .child(
+                  v_flex()
+                    .gap(8)
+                    .child(div().text_size(12).font_weight(600).text_color(t.foreground).child("Changed lines gutter"))
+                    .child(
+                      h_flex()
+                        .gap(8)
+                        .child(
+                          chip("bf-gutter-on", "On", fc.gutter, (cx) => {
+                            this.filesCfg = { ...fc, gutter: true };
+                            this.saveExternalModConfig("better-files", { gutter: true }, cx);
+                            cx.notify();
+                          })
+                        )
+                        .child(
+                          chip("bf-gutter-off", "Off (Herdr editor)", !fc.gutter, (cx) => {
+                            this.filesCfg = { ...fc, gutter: false };
+                            this.saveExternalModConfig("better-files", { gutter: false }, cx);
+                            cx.notify();
+                          })
+                        )
+                    )
+                )
+                .child(
+                  v_flex()
+                    .gap(8)
+                    .child(div().text_size(12).font_weight(600).text_color(t.foreground).child("Markdown opens as"))
+                    .child(
+                      h_flex()
+                        .gap(8)
+                        .child(
+                          chip("bf-md-preview", "Preview", fc.markdown === "preview", (cx) => {
+                            this.filesCfg = { ...fc, markdown: "preview" };
+                            this.saveExternalModConfig("better-files", { markdown: "preview" }, cx);
+                            cx.notify();
+                          })
+                        )
+                        .child(
+                          chip("bf-md-code", "Code", fc.markdown === "code", (cx) => {
+                            this.filesCfg = { ...fc, markdown: "code" };
+                            this.saveExternalModConfig("better-files", { markdown: "code" }, cx);
+                            cx.notify();
+                          })
+                        )
+                    )
+                )
+                .child(
+                  v_flex()
+                    .gap(8)
+                    .child(div().text_size(12).font_weight(600).text_color(t.foreground).child("Tree refresh interval"))
+                    .child(
+                      h_flex()
+                        .gap(8)
+                        .children(
+                          ["5s", "10s", "30s"].map((val) =>
+                            chip(`bf-tree-${val}`, val, fc.refresh?.tree === val, (cx) => {
+                              this.filesCfg = { ...fc, refresh: { ...fc.refresh, tree: val } };
+                              this.saveExternalModConfig("better-files", { refresh: { tree: val } }, cx);
                               cx.notify();
-                            }
+                            })
                           )
+                        )
+                    )
+                )
+            );
+          })
+          .when(this.section === "alerts", (panel) => {
+            const al = this.alertsCfg;
+            const chip = (id, label, active, onClick) =>
+              h_flex()
+                .id(id)
+                .h(30)
+                .px(12)
+                .gap(6)
+                .rounded(7)
+                .items_center()
+                .cursor_pointer()
+                .border_1()
+                .border_color(active ? t.accent : t.border)
+                .bg(active ? t.selected : t.raised)
+                .text_size(12)
+                .font_weight(active ? 500 : 400)
+                .text_color(active ? t.foreground : t.muted)
+                .hover((s) => s.bg(t.hover))
+                .on_mouse_down("left", (_ev, cx) => {
+                  cx.stop_propagation();
+                  onClick(cx);
+                })
+                .child(div().child(label))
+                .when(active, (el) => el.child(svg(ICON.check).size(12).text_color(t.accent)));
+            return panel.child(
+              v_flex()
+                .flex_1()
+                .w_full()
+                .min_w(0)
+                .h_full()
+                .min_h(0)
+                .justify_start()
+                .p(16)
+                .gap(16)
+                .overflow_y_scroll()
+                .child(
+                  v_flex()
+                    .gap(4)
+                    .child(div().text_size(12.5).font_weight(600).text_color(t.foreground).child("Desktop Alerts (Better Alerts)"))
+                    .child(div().text_size(11.5).text_color(t.muted).child("Native Linux/Hyprland desktop notifications when an agent needs input or finishes in the background."))
+                )
+                .child(
+                  v_flex()
+                    .gap(8)
+                    .child(div().text_size(12).font_weight(600).text_color(t.foreground).child("When an agent needs you (blocked)"))
+                    .child(
+                      h_flex()
+                        .gap(8)
+                        .child(
+                          chip("al-blocked-on", "On", al.blocked, (cx) => {
+                            this.alertsCfg = { ...al, blocked: true };
+                            this.saveExternalModConfig("better-alerts", { alerts: { ...al, blocked: true } }, cx);
+                            cx.notify();
+                          })
+                        )
+                        .child(
+                          chip("al-blocked-off", "Off", !al.blocked, (cx) => {
+                            this.alertsCfg = { ...al, blocked: false };
+                            this.saveExternalModConfig("better-alerts", { alerts: { ...al, blocked: false } }, cx);
+                            cx.notify();
+                          })
+                        )
+                    )
+                )
+                .child(
+                  v_flex()
+                    .gap(8)
+                    .child(div().text_size(12).font_weight(600).text_color(t.foreground).child("When an agent finishes (done)"))
+                    .child(
+                      h_flex()
+                        .gap(8)
+                        .child(
+                          chip("al-done-on", "On", al.done, (cx) => {
+                            this.alertsCfg = { ...al, done: true };
+                            this.saveExternalModConfig("better-alerts", { alerts: { ...al, done: true } }, cx);
+                            cx.notify();
+                          })
+                        )
+                        .child(
+                          chip("al-done-off", "Off", !al.done, (cx) => {
+                            this.alertsCfg = { ...al, done: false };
+                            this.saveExternalModConfig("better-alerts", { alerts: { ...al, done: false } }, cx);
+                            cx.notify();
+                          })
                         )
                     )
                 )

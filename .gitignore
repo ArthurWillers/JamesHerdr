@@ -1,2 +1,2 @@
-mods/*/gpui-kit.d.ts
-mods/*/jsconfig.json
+**/gpui-kit.d.ts
+**/jsconfig.json

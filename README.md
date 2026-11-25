@@ -4,22 +4,26 @@ Personal [Herdr](https://herdr.dev) workspace layout, mods, and [Omarchy](https:
 
 ## Features
 
-- **`activity-bar`**: Icon-only right navigation rail with tooltips to toggle `Dashboard`, `Files`, `Source Control`, `To-do`, `Runbook`, and `Notes` panels.
-- **`james-dashboard`**: Cockpit-style General Overview panel with live agent status counters/jump list, General to-dos, Global runbook shortcuts, General notes preview, and Spaces/Machines status.
-- **`james-files`**: Lazy file browser with searchable file tree (↑/↓ + Enter), folder/file Git status indicators and tooltips, inline file editor with Auto-Save / `Ctrl+S`, Word Wrap (`Alt+Z`), in-file search, and a character-level inline HEAD Diff view (`Alt+D`) with per-hunk revert.
-- **`james-todos`**: Per-Space and General to-do list with priorities (`High`/`Medium`/`Low`), expandable task notes, move between Space/General, filters (`All` / `Pending` / `Done`), and 1-click launch of any task (with its notes) using the configured Default Agent.
-- **`james-runbook`**: Per-Space and General command runbook with automatic script detection from `package.json`, `Makefile`, and `Cargo.toml`, plus custom saved commands runnable in a new tab with 1 click.
-- **`james-notes`**: Persistent Markdown scratchpad with per-Space and General scopes and automatic saving (without dirtying the git repository).
-- **`projects-sidebar`**: Collapsible Spaces tree grouped by machine, showing nested tabs, agent icons/spinners, context menus, and a footer shortcut to **JamesHerdr Settings**.
-- **`source-control`**: VS Code-inspired Source Control panel with multi-line commit composer, ephemeral AI commit message generation (`Generate`), split Commit/Push/Amend actions, `Staged Changes` / `Changes` with line counts and status tooltips, interactive commit `Graph`, and collapsible diff inspector.
-- **`james-settings`**: Dedicated settings dialog to configure:
-  - **Default Agent** (for the `+` menu and `Ctrl+Shift+A` shortcut)
-  - **AI Commit** (CLI provider, auto-discovered local models, and editable prompt template — kept in English regardless of UI language)
-  - **Language** (searchable selector supporting 50 locales, with `Auto (System)` detection across Linux, macOS, Windows, and Omarchy)
-  - **Omarchy** (shown only on compatible Omarchy systems; groups Omarchy hooks such as `theme-set.d` theme sync)
-- **`james-tabs` & `james-new-menu`**: Custom tab bar with automatic system/Omarchy language detection, startup Omarchy theme sync, and a clean `+` menu prioritizing the configured Default Agent and only showing genuinely installed CLIs.
-- **`james-pane`**: Rounded pane header matching the terminal frame radius.
+- **`better-sidebar` (customized)**: Based on `munza/herdr-mods/better-sidebar`, extended with the JamesHerdr Cockpit dock (`Dashboard`, `To-do`, `Runbook`, `Notes`, `Routines`, `GitHub` with live badges), collapsible spaces (click any space row to fold/unfold), background routines ticker, `~/` home space creation, and a compact footer opening **JamesHerdr Settings**.
+- **`james-dashboard`**: Cockpit-style agent-agnostic General Overview with live agent status counters, `Needs You` spotlight, `Apps` quick-launcher, General to-dos with priority picker, Global runbook shortcuts, and live General notes.
+- **`james-todos`**: Per-Space and General to-do list with priorities (`High`/`Medium`/`Low`), expandable task notes, move between Space/General, filters, and 1-click launch with Default Agent.
+- **`james-runbook`**: Per-Space and General command runbook with automatic script detection (`package.json`, `Makefile`, `Cargo.toml`), Shell / Agent / Split (multi-terminal in one tab) commands, and inline editing.
+- **`james-routines`**: Scheduled commands and agent prompts supporting 24/7 OS-level execution (`crontab` / `systemd --user` on local or remote machines) or in-app Herdr timers, with remote log viewer.
+- **`james-github`**: Zero-config GitHub hub (`gh api graphql`) for Pull Requests, Issues, and CI & GitHub Pages failures across all accessible repos/orgs, with filters, alert muting, and 1-click Default Agent launch.
+- **`james-notes`**: Persistent Markdown scratchpad with per-Space and General scopes and auto-save.
+- **`source-control`**: VS Code-inspired Source Control panel with AI commit message generation (Global + per-Space prompt & diff ignore patterns), Commit/Push/Amend actions, interactive commit `Graph`, and diff inspector.
+- **`james-settings`**: Unified settings dialog for **Default Agent**, **AI Commit**, **Sidebar** (`better-sidebar`), **Files** (`better-files`), **Alerts** (`better-alerts`), and **Omarchy**.
+- **`james-tabs` & `james-new-menu`**: Custom tab bar with drag-and-drop tab merging into split panes, startup Omarchy theme sync, and a clean `+` menu showing only genuinely installed CLIs.
+- **`james-chrome`, `james-pane`, `james-status`, `activity-bar`**: Top sidebar brand/chrome, shared icons & English UI dictionary, rounded pane header, status bar, and right activity rail.
 - **`themes/`**: Bundled native Omarchy themes styled with unified sidebar/topbar chrome (`colors.chrome = background`) and darker panel contrast (`colors.canvas = dark_background`).
+
+## External Mod Prerequisites
+
+JamesHerdr uses three unmodified upstream mods from [munza/herdr-mods](https://github.com/munza/herdr-mods) (not vendored in this repo):
+
+- **`better-files`**: File browser, center-tab file viewer, Markdown preview, and external editor launch.
+- **`better-alerts`**: Native Linux/Hyprland desktop notifications (`notify-send` + `hyprctl`) when agents need input or finish.
+- **`better-icons`** *(optional, recommended)*: VS Code Material Icon Theme icons for `better-files` (must be **copied**, not symlinked, into `~/.config/herdr-app/mods/better-icons`).
 
 ## Installation
 
@@ -29,7 +33,19 @@ Personal [Herdr](https://herdr.dev) workspace layout, mods, and [Omarchy](https:
 git clone https://github.com/ArthurWillers/JamesHerdr.git ~/Code/JamesHerdr
 ```
 
-2. Symlink the layout, mods, themes, and helper script into `~/.config/herdr-app/`:
+2. Install the required upstream mods from `munza/herdr-mods`:
+
+```bash
+git clone --depth 1 --filter=blob:none --sparse https://github.com/munza/herdr-mods.git /tmp/herdr-mods
+git -C /tmp/herdr-mods sparse-checkout set better-files/mods/better-files better-alerts/mods/better-alerts better-icons/mods/better-icons
+mkdir -p ~/.config/herdr-app/mods
+cp -r /tmp/herdr-mods/better-files/mods/better-files ~/.config/herdr-app/mods/better-files
+cp -r /tmp/herdr-mods/better-alerts/mods/better-alerts ~/.config/herdr-app/mods/better-alerts
+cp -r /tmp/herdr-mods/better-icons/mods/better-icons ~/.config/herdr-app/mods/better-icons
+rm -rf /tmp/herdr-mods
+```
+
+3. Symlink the layout, JamesHerdr mods, themes, and helper script into `~/.config/herdr-app/`:
 
 ```bash
 mkdir -p ~/.config/herdr-app/{layouts,mods,themes,scripts}
@@ -47,29 +63,31 @@ done
 ln -sfn ~/Code/JamesHerdr/scripts/omarchy-theme-sync.sh ~/.config/herdr-app/scripts/omarchy-theme-sync.sh
 ```
 
-3. Switch Herdr to the `JamesHerdr` layout (or select it in the layout menu):
+4. Switch Herdr to the `JamesHerdr` layout:
 
 ```bash
-herdr-app do app.layout '{"name":"JamesHerdr"}'
+herdr-app do layout.switch '{"name":"JamesHerdr"}'
 ```
 
 ### Or just paste this prompt to your AI agent
 
 ```text
-Install and configure the JamesHerdr layout for Herdr on this machine:
+Read ~/.config/herdr-app/AGENTS.md, then install and configure the JamesHerdr layout on this machine:
 
 1. Clone https://github.com/ArthurWillers/JamesHerdr.git into ~/Code/JamesHerdr (or pull latest if it already exists).
-2. Create ~/.config/herdr-app/{layouts,mods,themes,scripts} and symlink:
+2. Install the required upstream mods from https://github.com/munza/herdr-mods into ~/.config/herdr-app/mods/ (by copying, NOT symlinking):
+   - better-files/mods/better-files -> ~/.config/herdr-app/mods/better-files
+   - better-alerts/mods/better-alerts -> ~/.config/herdr-app/mods/better-alerts
+   - better-icons/mods/better-icons -> ~/.config/herdr-app/mods/better-icons
+3. Create ~/.config/herdr-app/{layouts,mods,themes,scripts} and symlink from ~/Code/JamesHerdr:
    - layouts/JamesHerdr.json -> ~/.config/herdr-app/layouts/JamesHerdr.json
    - every folder in mods/* -> ~/.config/herdr-app/mods/
    - every file in themes/*.json -> ~/.config/herdr-app/themes/
-   - scripts/omarchy-theme-sync.sh -> ~/.config/herdr-app/scripts/omarchy-theme-sync.sh (ensure it is executable with chmod +x).
-3. Validate all installed mods by running `herdr-app check` on each symlinked mod in ~/.config/herdr-app/mods/.
-4. Check if this system runs Omarchy with ~/.config/omarchy/hooks/theme-set.d:
-   - If yes, symlink ~/.config/herdr-app/scripts/omarchy-theme-sync.sh to ~/.config/omarchy/hooks/theme-set.d/herdr-theme-sync and run it once so Herdr syncs with the current Omarchy theme (including generating a custom theme JSON on the fly if the active theme uses colors.toml).
-   - If not on Omarchy, skip the hook step.
-5. If Herdr is running, switch to the JamesHerdr layout with: herdr-app do app.layout '{"name":"JamesHerdr"}'.
-6. Report the installed paths, check results, and whether Omarchy theme sync was enabled.
+   - scripts/omarchy-theme-sync.sh -> ~/.config/herdr-app/scripts/omarchy-theme-sync.sh (ensure chmod +x).
+4. Validate all installed mods by running `herdr-app check` on each mod in ~/.config/herdr-app/mods/.
+5. If this system runs Omarchy with ~/.config/omarchy/hooks/theme-set.d, symlink ~/.config/herdr-app/scripts/omarchy-theme-sync.sh to ~/.config/omarchy/hooks/theme-set.d/herdr-theme-sync and run it once.
+6. If Herdr is running, switch to the JamesHerdr layout with: herdr-app do layout.switch '{"name":"JamesHerdr"}'.
+7. Report the installed paths, check results, and whether Omarchy theme sync was enabled.
 ```
 
 ## Omarchy Theme Sync
