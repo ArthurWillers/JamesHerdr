@@ -61,9 +61,10 @@ export function parseGraphLog(stdout) {
     });
 }
 
-// Lays commits out on lanes, producing Bezier segments [fromLane, fromY, toLane, toY, colorLane].
+// Lays commits out on lanes, producing Bezier segments [fromLane, fromY, toLane, toY, colorLane, unpushed].
 export function layoutGraph(commits) {
   const lanes = [];
+  const laneUnpushed = [];
   const free = () => {
     const i = lanes.indexOf(null);
     return i < 0 ? lanes.length : i;
@@ -71,37 +72,48 @@ export function layoutGraph(commits) {
   let width = 1;
   for (const c of commits) {
     const before = lanes.slice();
+    const wasUnpushed = laneUnpushed.slice();
     const segments = [];
     let lane = before.indexOf(c.fullHash);
     if (lane < 0) {
       lane = free();
       lanes[lane] = c.fullHash;
+      laneUnpushed[lane] = false;
     }
     before.forEach((hash, j) => {
       if (!hash) return;
       if (hash === c.fullHash) {
-        segments.push([j, 0, lane, 0.5, j]);
-        if (j !== lane) lanes[j] = null;
+        segments.push([j, 0, lane, 0.5, j, Boolean(wasUnpushed[j])]);
+        if (j !== lane) {
+          lanes[j] = null;
+          laneUnpushed[j] = false;
+        }
       } else {
-        segments.push([j, 0, j, 1, j]);
+        segments.push([j, 0, j, 1, j, Boolean(wasUnpushed[j])]);
       }
     });
     const [first, ...rest] = c.parents;
     lanes[lane] = first ?? null;
-    if (first) segments.push([lane, 0.5, lane, 1, lane]);
+    laneUnpushed[lane] = Boolean(first && c.unpushed);
+    if (first) segments.push([lane, 0.5, lane, 1, lane, Boolean(c.unpushed)]);
     for (const parent of rest) {
       let k = lanes.indexOf(parent);
       if (k < 0) {
         k = free();
         lanes[k] = parent;
+        laneUnpushed[k] = Boolean(c.unpushed);
       }
-      segments.push([lane, 0.5, k, 1, k]);
+      segments.push([lane, 0.5, k, 1, k, Boolean(c.unpushed)]);
     }
     width = Math.max(width, before.length, lanes.length);
-    while (lanes.length && lanes.at(-1) === null) lanes.pop();
+    while (lanes.length && lanes.at(-1) === null) {
+      lanes.pop();
+      laneUnpushed.length = lanes.length;
+    }
     c.col = lane;
     c.segments = segments;
     c.below = lanes.flatMap((h, i) => (h ? [i] : []));
+    c.belowUnpushed = new Set(lanes.flatMap((h, i) => (h && laneUnpushed[i] ? [i] : [])));
   }
   return width;
 }
@@ -112,8 +124,8 @@ export function graphCell(c, n, L, t, fill) {
   const y = (v) => v * GRAPH_ROW;
   const paths = new Map();
 
-  for (const [a, ya, b, yb, colorIdx] of c.segments ?? []) {
-    const color = laneColor(t, colorIdx);
+  for (const [a, ya, b, yb, colorIdx, isUnpushed] of c.segments ?? []) {
+    const color = isUnpushed ? t.ansi3 : laneColor(t, colorIdx);
     let p = paths.get(color)?.p ?? PathBuilder.stroke(1.75);
     p = p.move_to(x(a), y(ya));
     if (a === b) {
@@ -125,7 +137,7 @@ export function graphCell(c, n, L, t, fill) {
     paths.set(color, { p, color });
   }
 
-  const color = laneColor(t, c.col);
+  const color = c.unpushed ? t.ansi3 : laneColor(t, c.col);
   const ring = c.isHead || c.parents.length > 1;
   const dot = div()
     .absolute()

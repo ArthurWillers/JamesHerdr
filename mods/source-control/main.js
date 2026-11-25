@@ -314,9 +314,12 @@ export default class JamesChanges extends View {
           this.hasUpstream = false;
         }
 
-        const [cachedNum, workNum] = await Promise.all([
+        const [cachedNum, workNum, unpushedRes] = await Promise.all([
           git(["diff", "--cached", "--numstat", "-z", "--no-renames"]),
           git(["diff", "--numstat", "-z", "--no-renames"]),
+          this.hasUpstream && this.ahead > 0
+            ? git(["rev-list", "@{upstream}..HEAD"])
+            : Promise.resolve({ code: 1, stdout: "" }),
         ]);
 
         const parseStats = (res) => {
@@ -384,9 +387,17 @@ export default class JamesChanges extends View {
           );
         }
 
+        const unpushedSet = new Set(
+          unpushedRes.code === 0
+            ? unpushedRes.stdout.split("\n").map((s) => s.trim()).filter(Boolean)
+            : []
+        );
         const commits =
           head.code === 0 && logRes.code === 0
-            ? parseGraphLog(logRes.stdout)
+            ? parseGraphLog(logRes.stdout).map((c) => ({
+                ...c,
+                unpushed: unpushedSet.has(c.fullHash),
+              }))
             : [];
         const lanes = commits.length ? layoutGraph(commits) : 1;
 
@@ -1772,8 +1783,9 @@ export default class JamesChanges extends View {
       );
   }
 
-  renderRefBadge(r, t) {
+  renderRefBadge(r, t, unpushed = false) {
     const local = r.kind === "local";
+    const localColor = unpushed ? t.ansi3 : t.accent;
     return div()
       .min_w(0)
       .max_w(92)
@@ -1782,7 +1794,7 @@ export default class JamesChanges extends View {
       .rounded(4)
       .text_size(10)
       .font_weight(500)
-      .when(local, (e) => e.bg(t.accent + "24").text_color(t.accent))
+      .when(local, (e) => e.bg(localColor + "24").text_color(localColor))
       .when(!local, (e) =>
         e
           .border_1()
@@ -1866,7 +1878,9 @@ export default class JamesChanges extends View {
           .rounded(6)
           .cursor_pointer()
           .when(open, (e) => e.bg(t.selected))
-          .when(!open && c.isHead, (e) => e.bg(laneColor(t, c.col) + "12"))
+          .when(!open && c.isHead, (e) =>
+            e.bg((c.unpushed ? t.ansi3 : laneColor(t, c.col)) + "12")
+          )
           .when(!open, (e) => e.hover((s) => s.bg(t.hover)))
           .on_mouse_down("left", (_ev, cx) => {
             cx.stop_propagation();
@@ -1881,7 +1895,11 @@ export default class JamesChanges extends View {
                 .gap(4)
                 .items_center()
                 .overflow_hidden()
-                .children(c.refs.slice(0, 2).map((r) => this.renderRefBadge(r, t)))
+                .children(
+                  c.refs
+                    .slice(0, 2)
+                    .map((r) => this.renderRefBadge(r, t, c.unpushed))
+                )
                 .when(more > 0, (el) =>
                   el.child(
                     div()
@@ -1913,7 +1931,7 @@ export default class JamesChanges extends View {
             .top(0)
             .bottom(0)
             .w(1.75)
-            .bg(laneColor(t, i))
+            .bg(c.belowUnpushed?.has(i) ? t.ansi3 : laneColor(t, i))
         );
 
       const files = this.commitFiles[c.fullHash];
