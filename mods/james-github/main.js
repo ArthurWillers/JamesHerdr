@@ -24,6 +24,8 @@ const ICON = {
   sparkles: "mods/source-control/icons/sparkles.svg",
   branch: "mods/james-chrome/branch.svg",
   search: "mods/workspace-chrome/search.svg",
+  copy: "mods/better-files/icons/copy.svg",
+  check: "mods/workspace-chrome/check.svg",
 };
 
 const CACHE_KEY = "james-github.cache";
@@ -301,26 +303,75 @@ export default class JamesGithub extends View {
     });
   }
 
-  sendPrToAgent(pr) {
+  prPrompt(pr) {
     const isFailing = pr.ciState === "FAILURE" || pr.ciState === "ERROR";
-    const task =
-      pr.kind === "review"
-        ? `Review PR #${pr.number} (${pr.url}) in ${pr.repo}: "${pr.title}". Run \`gh pr diff ${pr.number} --repo ${pr.repo}\` and \`gh pr view ${pr.number} --repo ${pr.repo}\`, then give a concise code review.`
-        : isFailing
-          ? `Investigate and fix the failing CI checks on PR #${pr.number} (${pr.url}) in ${pr.repo}: "${pr.title}". Start with \`gh pr checks ${pr.number} --repo ${pr.repo}\`.`
-          : `Check PR #${pr.number} (${pr.url}) in ${pr.repo}: "${pr.title}". Run \`gh pr view ${pr.number} --repo ${pr.repo}\` and help with next steps.`;
-    this.launchWithAgent(pr.repo, `PR #${pr.number}`, task);
+    return pr.kind === "review"
+      ? `Review PR #${pr.number} (${pr.url}) in ${pr.repo}: "${pr.title}". Run \`gh pr diff ${pr.number} --repo ${pr.repo}\` and \`gh pr view ${pr.number} --repo ${pr.repo}\`, then give a concise code review.`
+      : isFailing
+        ? `Investigate and fix the failing CI checks on PR #${pr.number} (${pr.url}) in ${pr.repo}: "${pr.title}". Start with \`gh pr checks ${pr.number} --repo ${pr.repo}\`.`
+        : `Check PR #${pr.number} (${pr.url}) in ${pr.repo}: "${pr.title}". Run \`gh pr view ${pr.number} --repo ${pr.repo}\` and help with next steps.`;
+  }
+
+  issuePrompt(issue) {
+    return `Work on GitHub Issue #${issue.number} (${issue.url}) in ${issue.repo}: "${issue.title}". Run \`gh issue view ${issue.number} --repo ${issue.repo}\` to inspect the full details and help implement or investigate it.`;
+  }
+
+  ciPrompt(ci) {
+    const failedList = ci.failedChecks.map((c) => c.name).join(", ") || "CI / GitHub Pages";
+    return `Investigate and fix the failing CI / workflow (${failedList}) on branch \`${ci.branch}\` in ${ci.repo} (${ci.url}). Use \`gh run list --repo ${ci.repo} --branch ${ci.branch} --limit 5\` and \`gh run view --log-failed\` to diagnose the failure.`;
+  }
+
+  copyPrompt(id, text, cx) {
+    cx.write_to_clipboard(text);
+    this.copiedId = id;
+    cx.notify();
+    cx.timer.after(1500, (timerCx) => {
+      if (this.copiedId === id) {
+        this.copiedId = null;
+        timerCx.notify();
+      }
+    });
+  }
+
+  renderCopyPromptBtn(id, text, t) {
+    const copied = this.copiedId === id;
+    return h_flex()
+      .id(`gh-copy-${id}`)
+      .h(28)
+      .px(8)
+      .gap(4)
+      .rounded(6)
+      .items_center()
+      .cursor_pointer()
+      .border_1()
+      .border_color(copied ? t.accent : t.border)
+      .bg(copied ? t.selected : t.background)
+      .text_size(11)
+      .text_color(copied ? t.foreground : t.muted)
+      .hover((s) => s.bg(t.hover).text_color(t.foreground))
+      .tooltip("Copy prompt")
+      .on_mouse_down("left", (_ev, cx) => {
+        cx.stop_propagation();
+        this.copyPrompt(id, text, cx);
+      })
+      .child(
+        svg(copied ? ICON.check : ICON.copy)
+          .size(11)
+          .text_color(copied ? t.accent : t.muted)
+      )
+      .child(div().child(copied ? "Copied" : "Copy"));
+  }
+
+  sendPrToAgent(pr) {
+    this.launchWithAgent(pr.repo, `PR #${pr.number}`, this.prPrompt(pr));
   }
 
   sendIssueToAgent(issue) {
-    const task = `Work on GitHub Issue #${issue.number} (${issue.url}) in ${issue.repo}: "${issue.title}". Run \`gh issue view ${issue.number} --repo ${issue.repo}\` to inspect the full details and help implement or investigate it.`;
-    this.launchWithAgent(issue.repo, `Issue #${issue.number}`, task);
+    this.launchWithAgent(issue.repo, `Issue #${issue.number}`, this.issuePrompt(issue));
   }
 
   sendCiToAgent(ci) {
-    const failedList = ci.failedChecks.map((c) => c.name).join(", ") || "CI / GitHub Pages";
-    const task = `Investigate and fix the failing CI / workflow (${failedList}) on branch \`${ci.branch}\` in ${ci.repo} (${ci.url}). Use \`gh run list --repo ${ci.repo} --branch ${ci.branch} --limit 5\` and \`gh run view --log-failed\` to diagnose the failure.`;
-    this.launchWithAgent(ci.repo, `CI ${ci.repo.split("/").pop()}`, task);
+    this.launchWithAgent(ci.repo, `CI ${ci.repo.split("/").pop()}`, this.ciPrompt(ci));
   }
 
   render() {
@@ -895,6 +946,7 @@ export default class JamesGithub extends View {
                             )
                           )
                       )
+                      .child(this.renderCopyPromptBtn(`pr-${pr.id}`, this.prPrompt(pr), t))
                       .child(
                         (() => {
                           const muted = ignoredSet.has(pr.id);
@@ -1023,6 +1075,7 @@ export default class JamesGithub extends View {
                           .child(svg(ICON.sparkles).size(11).text_color(t.accent))
                           .child(div().child(tr("gh.work_issue")))
                       )
+                      .child(this.renderCopyPromptBtn(`iss-${issue.id}`, this.issuePrompt(issue), t))
                       .child(
                         h_flex()
                           .id(`gh-iss-open-${issue.id}`)
@@ -1115,29 +1168,31 @@ export default class JamesGithub extends View {
                       .flex_none()
                       .items_center()
                       .when(isFail, (row) =>
-                        row.child(
-                          h_flex()
-                            .id(`gh-ci-ag-${ci.id}`)
-                            .h(28)
-                            .px(10)
-                            .gap(5)
-                            .rounded(6)
-                            .items_center()
-                            .cursor_pointer()
-                            .border_1()
-                            .border_color(t.accent + "66")
-                            .bg(t.selected)
-                            .text_size(11.5)
-                            .font_weight(500)
-                            .text_color(t.foreground)
-                            .hover((s) => s.bg(t.hover))
-                            .on_mouse_down("left", (_ev, cx) => {
-                              cx.stop_propagation();
-                              this.sendCiToAgent(ci);
-                            })
-                            .child(svg(ICON.sparkles).size(11).text_color(t.accent))
-                            .child(div().child(tr("gh.ask_fix_ci")))
-                        )
+                        row
+                          .child(
+                            h_flex()
+                              .id(`gh-ci-ag-${ci.id}`)
+                              .h(28)
+                              .px(10)
+                              .gap(5)
+                              .rounded(6)
+                              .items_center()
+                              .cursor_pointer()
+                              .border_1()
+                              .border_color(t.accent + "66")
+                              .bg(t.selected)
+                              .text_size(11.5)
+                              .font_weight(500)
+                              .text_color(t.foreground)
+                              .hover((s) => s.bg(t.hover))
+                              .on_mouse_down("left", (_ev, cx) => {
+                                cx.stop_propagation();
+                                this.sendCiToAgent(ci);
+                              })
+                              .child(svg(ICON.sparkles).size(11).text_color(t.accent))
+                              .child(div().child(tr("gh.ask_fix_ci")))
+                          )
+                          .child(this.renderCopyPromptBtn(`ci-${ci.id}`, this.ciPrompt(ci), t))
                       )
                       .child(
                         (() => {
