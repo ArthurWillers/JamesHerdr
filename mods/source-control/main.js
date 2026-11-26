@@ -105,17 +105,112 @@ const COMMIT_MODES = [
   { id: "amend", labelKey: "sc.commit_amend" },
 ];
 
+const DRAFTS_KEY = "james-changes.drafts";
+const GEN_KEY = "james-changes.generating";
+const LAST_REPO_KEY = "james-changes.lastRepoBySpace";
+const GEN_TIMEOUT_MS = 180000;
+
+const repoKeyOf = (root, on) =>
+  root ? JSON.stringify({ root, on: on ?? null }) : null;
+
+const parentDir = (p) => {
+  if (!p) return null;
+  const idx = p.lastIndexOf("/");
+  return idx > 0 ? p.slice(0, idx) : "/";
+};
+
+function getDraft(rk) {
+  if (!rk) return "";
+  return (shared(DRAFTS_KEY) ?? {})[rk] ?? "";
+}
+
+function setDraft(rk, text) {
+  if (!rk) return;
+  const all = { ...(shared(DRAFTS_KEY) ?? {}) };
+  if (text) all[rk] = text;
+  else delete all[rk];
+  setShared(DRAFTS_KEY, all);
+}
+
+function isRepoGenerating(rk) {
+  if (!rk) return false;
+  const entry = (shared(GEN_KEY) ?? {})[rk];
+  if (!entry) return false;
+  return Date.now() - (entry.at ?? 0) < GEN_TIMEOUT_MS;
+}
+
+function setRepoGenerating(rk, active) {
+  if (!rk) return;
+  const all = { ...(shared(GEN_KEY) ?? {}) };
+  if (active) all[rk] = { at: Date.now() };
+  else delete all[rk];
+  setShared(GEN_KEY, all);
+}
+
+function rememberSpaceRepo(spaceId, info) {
+  if (!spaceId || !info?.root) return;
+  const all = { ...(shared(LAST_REPO_KEY) ?? {}) };
+  all[spaceId] = { cwd: info.cwd || info.root, root: info.root, on: info.on ?? null };
+  setShared(LAST_REPO_KEY, all);
+}
+
 function location() {
   const space = spaces().find((s) => s.active);
   const f = focused();
   const pane = f?.pane ? panes().find((p) => p.pane === f.pane) : null;
-  const on =
+  const spaceId = space?.id;
+  const defaultOn =
     f?.pane === null
       ? f.terminal?.includes("/")
         ? f.terminal.split("/")[0]
-        : null
+        : space?.machine ?? null
       : space?.machine ?? null;
-  return { cwd: pane?.cwd || f?.cwd || space?.folder, on, spaceId: space?.id };
+
+  if (pane?.mod === "better-files") {
+    const viewers = Object.values(shared("better-files.viewers") ?? {});
+    const match =
+      viewers.find((v) => v.tab && v.tab === pane.tab && v.file) ??
+      viewers.find((v) => v.space === spaceId && v.file);
+    if (match?.file) {
+      return {
+        cwd: match.file.root || parentDir(match.file.path) || space?.folder,
+        on: match.file.on ?? defaultOn,
+        spaceId,
+        fromMod: true,
+      };
+    }
+  }
+
+  if (pane?.mod === "source-control") {
+    const target = (shared("james-changes.diff-tabs") ?? {})[spaceId]?.target;
+    if (target?.root) {
+      return {
+        cwd: target.root,
+        on: target.on ?? defaultOn,
+        spaceId,
+        fromMod: true,
+      };
+    }
+  }
+
+  if (pane?.mod) {
+    const last = (shared(LAST_REPO_KEY) ?? {})[spaceId];
+    if (last?.root) {
+      return { cwd: last.root, on: last.on ?? defaultOn, spaceId, fromMod: true };
+    }
+    return { cwd: space?.folder, on: defaultOn, spaceId, fromMod: true };
+  }
+
+  const cwd = pane?.cwd || f?.cwd;
+  if (cwd) {
+    return { cwd, on: defaultOn, spaceId, fromMod: false };
+  }
+
+  const last = (shared(LAST_REPO_KEY) ?? {})[spaceId];
+  if (last?.root) {
+    return { cwd: last.root, on: last.on ?? defaultOn, spaceId, fromMod: true };
+  }
+  return { cwd: space?.folder, on: defaultOn, spaceId, fromMod: false };
 }
 
 const key = () => {
@@ -135,7 +230,7 @@ const countLines = (text) =>
   text ? text.split("\n").length - Number(text.endsWith("\n")) : 0;
 
 function cleanAiOutput(raw) {
-  let text = (raw ?? "").trim();
+  let text = (raw ?? "").replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
   const fence = /^```(?:text|markdown|gitcommit|commit)?\s*\n([\s\S]*?)\n```$/i.exec(
     text
   );
@@ -184,7 +279,8 @@ export default class JamesChanges extends View {
     this.asking = null; // { text, actions: [args[]] }
     this.commitMode = "commit"; // "commit" | "push" | "amend"
     this.showCommitMenu = false;
-    this.generating = false;
+    this.repoKey = null;
+    this.spaceId = null;
     this.message = "";
     this.open = null; // { path, staged, commit? }
     this.lastOpened = null;
@@ -197,6 +293,7 @@ export default class JamesChanges extends View {
     this.input.on("change", (_e, cx) => {
       const prev = Boolean(this.message.trim());
       this.message = this.input.value();
+      if (this.repoKey) setDraft(this.repoKey, this.message);
       if (prev !== Boolean(this.message.trim())) cx.notify();
     });
     this.input.on("focus", (_e, cx) => {
@@ -229,32 +326,40 @@ export default class JamesChanges extends View {
     });
   }
 
+  isGenerating() {
+    return isRepoGenerating(this.repoKey);
+  }
+
+  switchRepo(nextRepoKey) {
+    if (this.repoKey === nextRepoKey) return;
+    if (this.repoKey) setDraft(this.repoKey, this.message);
+    this.repoKey = nextRepoKey;
+    this.staged = [];
+    this.unstaged = [];
+    this.commits = [];
+    this.lanes = 1;
+    this.commitFiles = {};
+    this.expandedCommit = null;
+    this.open = null;
+    this.lastOpened = null;
+    this.asking = null;
+    this.note = null;
+    this.watched = null;
+    const savedDraft = getDraft(nextRepoKey);
+    this.message = savedDraft;
+    this.input.set_value(savedDraft);
+  }
+
   refresh(cx) {
     if (this.loading) {
       this.dirty = true;
       return;
     }
     if (this.busy) return;
-    const { cwd, on } = location();
+    const loc = location();
+    const { cwd, on, spaceId, fromMod } = loc;
     const context = key();
-    if (context !== this.context) {
-      this.context = context;
-      this.root = null;
-      this.staged = [];
-      this.unstaged = [];
-      this.commits = [];
-      this.lanes = 1;
-      this.commitFiles = {};
-      this.expandedCommit = null;
-      this.open = null;
-      this.lastOpened = null;
-      this.asking = null;
-      this.message = "";
-      this.input.set_value("");
-      this.error = null;
-      this.note = null;
-      this.watched = null;
-    }
+    this.context = context;
     if (!cwd) return;
     this.loading = true;
     cx.spawn(async (cx) => {
@@ -265,16 +370,30 @@ export default class JamesChanges extends View {
         });
         if (key() !== context) return;
         if (top.code !== 0) {
+          // If focus is on a mod tab (e.g., file viewer / notes) and we already have a repo
+          // in this space, keep showing that repo instead of flashing "Not a git repository".
+          if (fromMod && this.root && this.spaceId === spaceId) {
+            return;
+          }
+          this.switchRepo(null);
           this.root = null;
-          this.staged = [];
-          this.unstaged = [];
-          this.commits = [];
-          this.lanes = 1;
-          this.open = null;
+          this.spaceId = spaceId;
           this.error = tr("sc.not_git");
           return;
         }
         const root = top.stdout.trim();
+        const nextRepoKey = repoKeyOf(root, on);
+        if (nextRepoKey !== this.repoKey) {
+          this.switchRepo(nextRepoKey);
+        } else if (!this.typing) {
+          const savedDraft = getDraft(nextRepoKey);
+          if (savedDraft && savedDraft !== this.message) {
+            this.message = savedDraft;
+            this.input.set_value(savedDraft);
+          }
+        }
+        this.spaceId = spaceId;
+        rememberSpaceRepo(spaceId, { cwd, root, on });
         const git = (args) => exec("git", [...READ, ...args], { cwd: root, on });
 
         const logArgs = [
@@ -720,6 +839,7 @@ export default class JamesChanges extends View {
           const msg = r.stdout.trim();
           this.message = msg;
           this.input.set_value(msg);
+          if (this.repoKey) setDraft(this.repoKey, msg);
           cx.notify();
         }
       });
@@ -743,7 +863,7 @@ export default class JamesChanges extends View {
 
     const root = this.root;
     const on = this.on;
-    const context = this.context;
+    const targetRepoKey = this.repoKey;
     const message = this.message.trim();
     const shouldStageAll = this.staged.length === 0 && !isAmend;
     const commitArgs = [
@@ -776,7 +896,8 @@ export default class JamesChanges extends View {
         if (comRes.code !== 0)
           throw new Error((comRes.stderr || comRes.stdout).trim());
 
-        if (key() === context) {
+        setDraft(targetRepoKey, "");
+        if (this.repoKey === targetRepoKey) {
           this.message = "";
           this.input.set_value("");
           if (this.commitMode === "amend") this.commitMode = "commit";
@@ -795,7 +916,7 @@ export default class JamesChanges extends View {
           });
         }
       } catch (e) {
-        if (key() === context)
+        if (this.repoKey === targetRepoKey)
           this.note = `${
             andPush ? tr("sc.commit_push") : tr("sc.commit")
           }: ${e}`;
@@ -817,7 +938,7 @@ export default class JamesChanges extends View {
   }
 
   generateAiCommit(cx) {
-    if (!this.root || this.generating) return;
+    if (!this.root || !this.repoKey || this.isGenerating()) return;
     const aiCfg = shared("james-changes.ai") ?? {};
     const provider = (aiCfg.provider || "").trim();
     if (!provider) {
@@ -826,12 +947,17 @@ export default class JamesChanges extends View {
         kind: "dialog",
         width: 600,
         height: 500,
+        props: { section: "ai-commit" },
       });
       return;
     }
+    const targetRepoKey = this.repoKey;
     const root = this.root;
     const on = this.on;
+    const useStaged = this.staged.length > 0;
+    const freshSnapshot = this.unstaged.filter((u) => u.fresh).slice(0, 12);
     const model = (aiCfg.model || "").trim();
+    const ollamaUrl = ((aiCfg.ollamaUrl || "").trim() || "http://127.0.0.1:11434").replace(/\/+$/, "");
     const activeSpace = spaces().find((s) => s.active);
     const spaceKey = activeSpace?.folder || root || activeSpace?.id || "";
     const spaceCfg =
@@ -855,13 +981,12 @@ export default class JamesChanges extends View {
       ? ["--", ".", ...ignorePatterns.map((p) => `:(glob,exclude)${p}`)]
       : [];
 
-    this.generating = true;
+    setRepoGenerating(targetRepoKey, true);
     this.note = null;
     cx.notify();
 
     cx.spawn(async (cx) => {
       try {
-        const useStaged = this.staged.length > 0;
         const [statusRes, statRes, diffRes] = await Promise.all([
           exec(
             "git",
@@ -901,9 +1026,9 @@ export default class JamesChanges extends View {
         ]);
 
         let diffText = (diffRes.stdout || "").trim();
-        if (!useStaged && !diffText && this.unstaged.some((f) => f.fresh)) {
+        if (!useStaged && !diffText && freshSnapshot.length > 0) {
           const previews = [];
-          for (const f of this.unstaged.filter((u) => u.fresh).slice(0, 12)) {
+          for (const f of freshSnapshot) {
             const content = await readTextFile(`${root}/${f.path}`, {
               on,
             }).catch(() => "");
@@ -979,6 +1104,21 @@ export default class JamesChanges extends View {
             pathPrefix +
             `codex exec --ephemeral "$AI_PROMPT"` +
             (model ? ` -m "$AI_MODEL"` : "");
+        } else if (provider === "ollama") {
+          cmd =
+            pathPrefix +
+            'M="$AI_MODEL"; ' +
+            'if [ -z "$M" ]; then ' +
+            '  M=$(curl -sf --max-time 3 "$OLLAMA_URL/api/tags" 2>/dev/null | jq -r ".models[0].name // empty" 2>/dev/null || true); ' +
+            'fi; ' +
+            'if [ -z "$M" ]; then ' +
+            '  echo "Could not find an Ollama model at $OLLAMA_URL (make sure ollama serve is running and a model is pulled)." >&2; exit 1; ' +
+            'fi; ' +
+            'PAYLOAD=$(jq -nc --arg model "$M" --arg prompt "$AI_PROMPT" "{model: \\$model, prompt: \\$prompt, stream: false}"); ' +
+            'RESP=$(curl -sS --max-time 120 -H "Content-Type: application/json" -d "$PAYLOAD" "$OLLAMA_URL/api/generate") || exit 1; ' +
+            'ERR=$(printf "%s" "$RESP" | jq -r ".error // empty" 2>/dev/null || true); ' +
+            'if [ -n "$ERR" ]; then printf "%s\\n" "$ERR" >&2; exit 1; fi; ' +
+            'printf "%s" "$RESP" | jq -r ".response // empty"';
         } else {
           cmd =
             pathPrefix +
@@ -988,8 +1128,15 @@ export default class JamesChanges extends View {
 
         const r = await exec(
           "env",
-          [`AI_PROMPT=${fullPrompt}`, `AI_MODEL=${model}`, "sh", "-c", cmd],
-          { cwd: root, on }
+          [
+            `AI_PROMPT=${fullPrompt}`,
+            `AI_MODEL=${model}`,
+            `OLLAMA_URL=${ollamaUrl}`,
+            "sh",
+            "-c",
+            cmd,
+          ],
+          { cwd: root, on, timeout: 120000 }
         );
 
         if (r.code !== 0) {
@@ -1001,12 +1148,28 @@ export default class JamesChanges extends View {
         const generated = cleanAiOutput(r.stdout);
         if (!generated) throw new Error("LLM returned an empty response.");
 
-        this.message = generated;
-        this.input.set_value(generated);
+        setDraft(targetRepoKey, generated);
+        if (this.repoKey === targetRepoKey) {
+          this.message = generated;
+          this.input.set_value(generated);
+        } else {
+          notify({
+            title: "AI Commit Ready",
+            body: generated.split("\n")[0],
+          });
+        }
       } catch (e) {
-        this.note = `AI generation error: ${e}`;
+        if (this.repoKey === targetRepoKey) {
+          this.note = `AI generation error: ${e}`;
+        } else {
+          notify({
+            title: "AI Commit Failed",
+            body: String(e),
+            level: "error",
+          });
+        }
       } finally {
-        this.generating = false;
+        setRepoGenerating(targetRepoKey, false);
         cx.notify();
       }
     });
@@ -1203,6 +1366,7 @@ export default class JamesChanges extends View {
 
   // ── Commit Composer ───────────────────────────────────────────────────────
   renderComposer(t, canCommit, activeModeObj) {
+    const generating = this.isGenerating();
     const dropdownArrowBtn = h_flex()
       .id("sc-commit-dropdown-btn")
       .w(28)
@@ -1355,7 +1519,7 @@ export default class JamesChanges extends View {
                   .border_color(t.border)
                   .bg(t.raised)
                   .text_size(11)
-                  .text_color(this.generating ? t.accent : t.muted)
+                  .text_color(generating ? t.accent : t.muted)
                   .cursor_pointer()
                   .hover((s) => s.bg(t.hover).text_color(t.foreground))
                   .on_mouse_down("left", (_ev, cx) => {
@@ -1363,13 +1527,13 @@ export default class JamesChanges extends View {
                     this.generateAiCommit(cx);
                   })
                   .child(
-                    this.generating
+                    generating
                       ? svg(ICON.spinner).size(11).text_color(t.accent).spin(900)
                       : svg(ICON.sparkles).size(11).text_color(t.accent)
                   )
                   .child(
                     div().child(
-                      this.generating ? tr("sc.generating") : tr("sc.generate")
+                      generating ? tr("sc.generating") : tr("sc.generate")
                     )
                   )
               )

@@ -90,6 +90,7 @@ function normKey(key) {
   if (k.includes("claude")) return "claude";
   if (k.includes("codex")) return "codex";
   if (k.includes("opencode")) return "opencode";
+  if (k.includes("ollama")) return "ollama";
   return k || "agy";
 }
 
@@ -112,6 +113,20 @@ export default class JamesSettings extends View {
     const saved = shared("james-changes.ai") ?? {};
     this.provider = saved.provider ? normKey(saved.provider) : "";
     this.model = saved.model ?? "";
+    this.ollamaUrl = saved.ollamaUrl ?? "";
+    this.ollamaUrlInput = InputState.new({
+      placeholder: "http://127.0.0.1:11434",
+    });
+    if (this.ollamaUrl) this.ollamaUrlInput.set_value(this.ollamaUrl);
+    this.ollamaUrlInput.on("change", (_ev, cx) => {
+      this.ollamaUrl = this.ollamaUrlInput.value();
+      this.save();
+      cx.notify();
+    });
+    this.ollamaUrlInput.on("submit", (_ev, cx) => {
+      this.save();
+      if (this.provider === "ollama") this.discoverModels("ollama", cx);
+    });
     const rawSavedPrompt = saved.prompt ?? DEFAULT_PROMPT;
     this.prompt = rawSavedPrompt.includes("Rules:\n- Output ONLY the raw commit message text")
       ? DEFAULT_PROMPT
@@ -456,6 +471,7 @@ export default class JamesSettings extends View {
     setShared("james-changes.ai", {
       provider: this.provider,
       model: this.model,
+      ollamaUrl: this.ollamaUrl.trim(),
       prompt: this.prompt,
       ignore: this.globalIgnore,
       spaces: this.spaceConfigs,
@@ -481,6 +497,7 @@ export default class JamesSettings extends View {
           "check_one claude claude claude; " +
           "check_one codex codex codex; " +
           "check_one opencode opencode opencode; " +
+          "check_one ollama ollama ollama; " +
           "check_one gemini gemini gemini-cli; " +
           "check_one pi pi pi; " +
           "check_one cursor-agent cursor-agent cursor-agent; " +
@@ -517,6 +534,14 @@ export default class JamesSettings extends View {
           const k = normKey(a.key);
           return realRes.code === 0 ? realKeys.has(k) : Boolean(a.installed);
         });
+        if (realKeys.has("ollama") || this.ollamaUrl.trim()) {
+          installed.push({
+            key: "ollama",
+            name: "Ollama",
+            icon: null,
+            tint: true,
+          });
+        }
 
         this.installedAgents = installed;
         setShared("james-settings.agents", installed);
@@ -563,6 +588,11 @@ export default class JamesSettings extends View {
         } else if (prov === "claude") {
           cmd +=
             '{ jq -r ".model // empty" "$HOME/.claude/settings.json" 2>/dev/null; printf "sonnet\\nhaiku\\nopus\\n"; } | awk "NF && !seen[\\$0]++"';
+        } else if (prov === "ollama") {
+          const url = (this.ollamaUrl.trim() || "http://127.0.0.1:11434").replace(/\/+$/, "");
+          cmd +=
+            `{ curl -sf --max-time 3 "${url.replace(/"/g, "")}/api/tags" 2>/dev/null | jq -r ".models[]?.name // empty" 2>/dev/null; ` +
+            'ollama list 2>/dev/null | awk "NR>1 && \\$1 {print \\$1}"; } | awk "NF && !seen[\\$0]++"';
         }
 
         const r = await exec("sh", ["-c", cmd]);
@@ -1282,6 +1312,42 @@ export default class JamesSettings extends View {
                         .child(tr("set.ai_no_agents"))
                     )
                   )
+              )
+              .when(this.provider === "ollama", (el) =>
+                el.child(
+                  v_flex()
+                    .gap(5)
+                    .child(
+                      div()
+                        .text_size(12)
+                        .font_weight(600)
+                        .text_color(t.foreground)
+                        .child("Ollama Host URL")
+                    )
+                    .child(
+                      div()
+                        .h(30)
+                        .px(8)
+                        .flex()
+                        .items_center()
+                        .rounded(7)
+                        .border_1()
+                        .border_color(t.border)
+                        .bg(t.canvas ?? t.background)
+                        .child(
+                          Input.new(this.ollamaUrlInput)
+                            .w_full()
+                            .text_size(12)
+                            .text_color(t.foreground)
+                        )
+                    )
+                    .child(
+                      div()
+                        .text_size(10.5)
+                        .text_color(t.dim)
+                        .child("Leave empty for http://127.0.0.1:11434 · Press Enter or Refresh to load models")
+                    )
+                )
               )
               .child(
                 // 2. Model Selector (Select dropdown)
