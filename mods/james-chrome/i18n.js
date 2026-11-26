@@ -309,6 +309,7 @@ const EN = {
   "sc.status_R": "Renamed",
   "sc.status_C": "Copied",
   "sc.status_T": "Type Changed",
+  "sc.status_conflict": "Merge Conflict",
   "sc.open_diff": "Open Diff",
   "sc.diff_inline": "Inline",
   "sc.diff_split": "Side by side",

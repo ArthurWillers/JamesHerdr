@@ -2,7 +2,7 @@
 // belongs in the code editor it can open.
 import { div, image } from "gpui-kit";
 import { h_flex, v_flex, Editor, EditorState, Scrollbar, v_virtual_list } from "gpui-base";
-import { appHome, exec, focused, layout, panes, readTextFile, setShared, shared, theme, window } from "herdr";
+import { appHome, exec, focused, layout, panes, readTextFile, writeTextFile, setShared, shared, theme, window } from "herdr";
 import {
   baseName,
   buildRows,
@@ -99,9 +99,15 @@ export const viewerMethods = {
       this.diffing = null;
       this.text = undefined;
       this.problem = null;
-      this.code?.release();
+      const oldCode = this.code;
       this.code = null;
+      if (oldCode) cx.timer.after(100, () => oldCode.release());
       this.selectMode = false;
+      this.editMode = false;
+      this.dirty = false;
+      this.saving = false;
+      this.saveError = null;
+      this.savedFlash = false;
       this.copiedFile = false;
       this.hunks = [];
       this.openHunks = new Set();
@@ -144,7 +150,7 @@ export const viewerMethods = {
     if (this.closed) return;
     const file = this.file;
     if (file && isImage(file.path)) return this.readImage(cx);
-    if (!file || this.reading) return;
+    if (!file || this.reading || (this.editMode && this.dirty)) return;
     this.reading = file;
     cx.spawn(async (cx) => {
       let shown;
@@ -154,28 +160,29 @@ export const viewerMethods = {
         shown = { problem: "This file can't be shown: it's too large, or can't be read." };
       }
       if (this.reading === file) this.reading = null;
-      if (this.file !== file) return;
+      if (this.file !== file || (this.editMode && this.dirty)) return;
       if (shown.problem) {
         this.problem = shown.problem;
         this.text = undefined;
-        this.code?.release();
+        const oldCode = this.code;
         this.code = null;
+        if (oldCode) cx.timer.after(100, () => oldCode.release());
       } else if (shown.text !== this.text) {
         this.problem = null;
         this.text = shown.text;
         if (this.code) this.code.set_value(shown.text);
-        else this.code = this.newCode(file, shown.text);
+        else this.code = this.newCode(file, shown.text, !this.editMode);
       }
       this.readMarkdownImages(cx);
       cx.notify();
     });
   },
 
-  newCode(file, value) {
+  newCode(file, value, readonly = true) {
     const t = theme();
-    return EditorState.new({
+    const ed = EditorState.new({
       language: languageOf(file.path),
-      readonly: true,
+      readonly,
       value,
       font_family: codeFont(),
       font_size: codeSize(),
@@ -192,6 +199,109 @@ export const viewerMethods = {
         "string.escape": t.ansi6,
       },
     });
+    if (!readonly) {
+      ed.on("change", (_e, changeCx) => {
+        const nextDirty = ed.value() !== (this.text ?? "");
+        if (nextDirty !== this.dirty || this.saveError) {
+          this.dirty = nextDirty;
+          this.saveError = null;
+          changeCx.notify();
+        }
+      });
+    }
+    return ed;
+  },
+
+  swapCode(file, value, readonly, cx) {
+    const old = this.code;
+    this.code = this.newCode(file, value, readonly);
+    if (old) cx.timer.after(100, () => old.release());
+  },
+
+  enterEditMode(cx) {
+    if (!this.file || this.text === undefined || this.editMode) return;
+    this.editMode = true;
+    this.selectMode = true;
+    this.dirty = false;
+    this.saveError = null;
+    const patch = { preview: false };
+    if (isMarkdown(this.file.path)) patch.markdown = "code";
+    this.setViewer(this.viewerId, patch);
+    this.swapCode(this.file, this.text, false, cx);
+    this.code?.focus();
+    cx.notify();
+  },
+
+  exitEditMode(cx) {
+    if (!this.editMode) return;
+    if (this.dirty) {
+      this.saveError = "Save or Revert your changes before leaving Edit mode.";
+      cx.notify();
+      return;
+    }
+    this.editMode = false;
+    this.saveError = null;
+    if (this.file && this.text !== undefined) {
+      this.swapCode(this.file, this.text, true, cx);
+    }
+    cx.notify();
+  },
+
+  revertEdit(cx) {
+    if (!this.editMode || !this.code) return;
+    this.code.set_value(this.text ?? "");
+    this.dirty = false;
+    this.saveError = null;
+    cx.notify();
+  },
+
+  saveEdit(cx) {
+    if (!this.editMode || !this.file || !this.code || this.saving) return;
+    const file = this.file;
+    const nextText = this.code.value();
+    const expected = this.text ?? null;
+    this.saving = true;
+    this.saveError = null;
+    cx.notify();
+    cx.spawn(async (cx) => {
+      try {
+        if (!file.on) {
+          await writeTextFile(file.path, nextText, expected);
+        } else {
+          const r = await exec(
+            "env",
+            [
+              `BF_PATH=${file.path}`,
+              `BF_CONTENT=${nextText}`,
+              "sh",
+              "-c",
+              'printf "%s" "$BF_CONTENT" > "$BF_PATH"',
+            ],
+            { on: file.on },
+          );
+          if (r.code !== 0) throw new Error((r.stderr || r.stdout || "Save failed").trim());
+        }
+        if (this.file !== file) return;
+        this.text = nextText;
+        this.dirty = false;
+        this.savedFlash = true;
+        const token = (this.savedToken ?? 0) + 1;
+        this.savedToken = token;
+        this.readHunks(cx);
+        cx.timer.after(COPIED_MS, (timerCx) => {
+          if (this.savedToken !== token) return;
+          this.savedFlash = false;
+          timerCx.notify();
+        });
+      } catch (e) {
+        if (this.file === file) {
+          this.saveError = `Save failed: ${String(e?.message ?? e).trim()}`;
+        }
+      } finally {
+        this.saving = false;
+        cx.notify();
+      }
+    });
   },
 
   // What the pane's header row says, the same row a diff uses: file, folder, and whether
@@ -203,7 +313,7 @@ export const viewerMethods = {
     const folder = file.path.slice(file.root.length + 1, -name.length - 1);
     const picture = fileIcon(this.fileIcons, file.path, { light: isLight(theme().background) });
     return {
-      title: name,
+      title: this.dirty ? `${name} ●` : name,
       detail: [folder, this.viewerEntry()?.preview ? "Preview" : null].filter(Boolean).join(" · "),
       // color: a full-colour picture, which Better Changes' pane header draws untinted.
       ...(picture ? { icon: picture, color: true } : { icon: "mods/better-files/icons/file.svg" }),
@@ -780,7 +890,7 @@ export const viewerMethods = {
 
   usesEditor() {
     if (!this.code) return false;
-    if (!this.gutterOn || this.selectMode) return true;
+    if (this.editMode || !this.gutterOn || this.selectMode) return true;
     return !(this.hunks?.length > 0);
   },
 
@@ -789,10 +899,11 @@ export const viewerMethods = {
     const preview = this.viewerEntry()?.preview;
     const editors = file?.on ? [] : foundEditors();
     const markdown = Boolean(file && isMarkdown(file.path));
-    const previewing = this.showsPreview();
+    const previewing = !this.editMode && this.showsPreview();
     const canCopy = this.text !== undefined && !(file && isImage(file.path));
-    const hasGutter = this.gutterOn && !previewing && (this.hunks?.length ?? 0) > 0;
+    const hasGutter = this.gutterOn && !previewing && !this.editMode && (this.hunks?.length ?? 0) > 0;
     const showView = (view) => (cx) => {
+      if (this.editMode) this.exitEditMode(cx);
       this.setViewer(this.viewerId, { markdown: view });
       cx.notify();
     };
@@ -803,7 +914,7 @@ export const viewerMethods = {
       .id("viewer-actions")
       .gap(6)
       .items_center()
-      .when(markdown, (el) =>
+      .when(markdown && !this.editMode, (el) =>
         el.child(
           h_flex()
             .id("viewer-view")
@@ -838,6 +949,44 @@ export const viewerMethods = {
           }),
         ),
       )
+      .when(canCopy && this.editMode, (el) =>
+        el
+          .child(
+            TextButton({
+              id: "viewer-save",
+              icon: this.savedFlash ? "check" : undefined,
+              label: this.saving ? "Saving…" : this.savedFlash ? "Saved" : "Save",
+              active: Boolean(this.dirty || this.savedFlash),
+              disabled: Boolean(this.saving || (!this.dirty && !this.savedFlash)),
+              onClick: (cx) => this.saveEdit(cx),
+            }),
+          )
+          .when(Boolean(this.dirty), (b) =>
+            b.child(
+              TextButton({
+                id: "viewer-revert",
+                label: "Revert",
+                onClick: (cx) => this.revertEdit(cx),
+              }),
+            ),
+          )
+          .child(
+            TextButton({
+              id: "viewer-done-edit",
+              label: "Done",
+              onClick: (cx) => this.exitEditMode(cx),
+            }),
+          ),
+      )
+      .when(canCopy && !this.editMode, (el) =>
+        el.child(
+          TextButton({
+            id: "viewer-edit-mode",
+            label: "Edit",
+            onClick: (cx) => this.enterEditMode(cx),
+          }),
+        ),
+      )
       .when(canCopy, (el) =>
         el.child(
           TextButton({
@@ -846,8 +995,9 @@ export const viewerMethods = {
             label: this.copiedFile ? "Copied" : "Copy",
             active: Boolean(this.copiedFile),
             onClick: (cx) => {
-              if (this.text === undefined) return;
-              cx.write_to_clipboard(this.text);
+              const content = this.editMode && this.code ? this.code.value() : this.text;
+              if (content === undefined) return;
+              cx.write_to_clipboard(content);
               const token = (this.copyFileToken ?? 0) + 1;
               this.copyFileToken = token;
               this.copiedFile = true;
@@ -902,7 +1052,13 @@ export const viewerMethods = {
       .overflow_hidden()
       .bg(t.background)
       .text_color(t.foreground)
-      .text_size(TEXT.body);
+      .text_size(TEXT.body)
+      .on_key_down((e, cx) => {
+        if (this.editMode && (e.modifiers?.control || e.modifiers?.platform) && e.key?.toLowerCase() === "s") {
+          cx.stop_propagation();
+          this.saveEdit(cx);
+        }
+      });
     if (!inHeader && head)
       root.child(
         h_flex()
@@ -922,10 +1078,35 @@ export const viewerMethods = {
           .child(div().flex_1().min_w(0).truncate().text_color(t.dim).child(head.detail))
           .child(this.viewerActions()),
       );
+    if (this.saveError)
+      root.child(
+        h_flex()
+          .px(10)
+          .py(4)
+          .gap(8)
+          .flex_none()
+          .items_center()
+          .bg(`${t.ansi1}18`)
+          .border_b(1)
+          .border_color(t.border)
+          .text_size(TEXT.caption)
+          .text_color(t.ansi1)
+          .child(div().flex_1().min_w(0).truncate().child(this.saveError))
+          .child(
+            TextButton({
+              id: "viewer-dismiss-err",
+              label: "Dismiss",
+              onClick: (cx) => {
+                this.saveError = null;
+                cx.notify();
+              },
+            }),
+          ),
+      );
     if (this.file && isImage(this.file.path)) root.child(this.imageView());
     else if (this.problem) root.child(Message(this.problem));
     else if (this.text === undefined) root.child(Message(head ? "Loading…" : "This tab has no file."));
-    else if (this.showsPreview()) root.child(this.previewView());
+    else if (!this.editMode && this.showsPreview()) root.child(this.previewView());
     else if (this.usesEditor()) root.child(v_flex().flex_1().min_h(0).child(Editor.new(this.code).flex_1().min_h(0)));
     else root.child(this.linesView());
     // There's no row of its own to sit in, so the actions float over the file's corner.

@@ -18,6 +18,8 @@ import {
 import {
   v_flex,
   h_flex,
+  Input,
+  InputState,
   TextareaState,
   Textarea,
   Popup,
@@ -77,6 +79,7 @@ const ICON = {
   folder: "mods/source-control/icons/folder.svg",
   list: "mods/source-control/icons/list.svg",
   listTree: "mods/source-control/icons/list-tree.svg",
+  stash: "mods/source-control/icons/stash.svg",
 };
 
 const GIT_STATUS_KEYS = {
@@ -87,6 +90,7 @@ const GIT_STATUS_KEYS = {
   R: "sc.status_R",
   C: "sc.status_C",
   T: "sc.status_T",
+  "!": "sc.status_conflict",
 };
 
 const gitStatusLabel = (code) =>
@@ -95,7 +99,7 @@ const gitStatusLabel = (code) =>
 const statusColor = (t, code) =>
   code === "A" || code === "U"
     ? t.ansi2
-    : code === "D"
+    : code === "D" || code === "!"
     ? t.ansi1
     : t.ansi3;
 
@@ -246,13 +250,23 @@ export default class JamesChanges extends View {
       return;
     }
 
+    this.conflicts = [];
     this.staged = [];
     this.unstaged = [];
+    this.stashes = [];
     this.commits = [];
     this.lanes = 1;
     this.commitFiles = {}; // fullHash -> [{ path, status, add, del }]
     this.expandedCommit = null;
     this.expandedBodyHashes = new Set();
+    this.copiedHash = null;
+    this.branchFromCommit = null;
+    this.branchNameInput = InputState.new({ placeholder: "New branch name…" });
+    this.branchNameInput.on("submit", (_e, cx) => {
+      if (this.branchFromCommit) {
+        this.createBranchFromCommit(this.branchFromCommit, cx);
+      }
+    });
     this.branch = "";
     this.ahead = 0;
     this.behind = 0;
@@ -334,12 +348,15 @@ export default class JamesChanges extends View {
     if (this.repoKey === nextRepoKey) return;
     if (this.repoKey) setDraft(this.repoKey, this.message);
     this.repoKey = nextRepoKey;
+    this.conflicts = [];
     this.staged = [];
     this.unstaged = [];
+    this.stashes = [];
     this.commits = [];
     this.lanes = 1;
     this.commitFiles = {};
     this.expandedCommit = null;
+    this.branchFromCommit = null;
     this.open = null;
     this.lastOpened = null;
     this.asking = null;
@@ -435,12 +452,13 @@ export default class JamesChanges extends View {
           this.hasUpstream = false;
         }
 
-        const [cachedNum, workNum, unpushedRes] = await Promise.all([
+        const [cachedNum, workNum, unpushedRes, stashRes] = await Promise.all([
           git(["diff", "--cached", "--numstat", "-z", "--no-renames"]),
           git(["diff", "--numstat", "-z", "--no-renames"]),
           this.hasUpstream && this.ahead > 0
             ? git(["rev-list", "@{upstream}..HEAD"])
             : Promise.resolve({ code: 1, stdout: "" }),
+          git(["stash", "list", "--format=%gd%x1f%gs%x1f%cr"]),
         ]);
 
         const parseStats = (res) => {
@@ -462,6 +480,7 @@ export default class JamesChanges extends View {
         const stagedStats = parseStats(cachedNum);
         const unstagedStats = parseStats(workNum);
 
+        const conflicts = [];
         const staged = [];
         const unstaged = [];
         const entries = status.stdout.split("\0").filter(Boolean);
@@ -471,6 +490,24 @@ export default class JamesChanges extends View {
           const y = entry[1];
           const path = entry.slice(3);
           const fresh = x === "?" && y === "?";
+          const isConflict =
+            x === "U" ||
+            y === "U" ||
+            (x === "A" && y === "A") ||
+            (x === "D" && y === "D");
+
+          if (isConflict) {
+            conflicts.push({
+              path,
+              status: "!",
+              conflict: true,
+              staged: false,
+              fresh: false,
+              add: 0,
+              del: 0,
+            });
+            continue;
+          }
 
           if (!fresh && x !== " " && x !== "?") {
             const stat = stagedStats[path] ?? { add: 0, del: 0 };
@@ -493,6 +530,22 @@ export default class JamesChanges extends View {
             });
           }
         }
+
+        const stashes =
+          stashRes.code === 0
+            ? stashRes.stdout
+                .split("\n")
+                .map((l) => l.trim())
+                .filter(Boolean)
+                .map((line) => {
+                  const [ref, msg, time] = line.split("\x1f");
+                  return {
+                    ref: ref ?? "",
+                    message: msg ?? "",
+                    time: time ?? "",
+                  };
+                })
+            : [];
 
         const freshFiles = unstaged.filter((f) => f.fresh).slice(0, 100);
         if (freshFiles.length > 0) {
@@ -526,14 +579,16 @@ export default class JamesChanges extends View {
         this.root = root;
         this.on = on;
         this.hasHead = head.code === 0;
+        this.conflicts = conflicts;
         this.staged = staged;
         this.unstaged = unstaged;
+        this.stashes = stashes;
         this.commits = commits;
         this.lanes = lanes;
         this.error = null;
         this.watch(root, cx);
 
-        const allFiles = [...staged, ...unstaged];
+        const allFiles = [...conflicts, ...staged, ...unstaged];
         if (
           this.open &&
           !this.open.commit &&
@@ -579,6 +634,12 @@ export default class JamesChanges extends View {
       commit: c?.fullHash ?? commit,
       short: c?.hash ?? commit,
       subject: c?.subject ?? null,
+      peers: list.map((x) => ({
+        path: x.path,
+        staged: Boolean(staged),
+        fresh: Boolean(x.fresh),
+        status: x.status ?? null,
+      })),
     });
     cx.notify();
   }
@@ -799,6 +860,11 @@ export default class JamesChanges extends View {
     );
   }
 
+  askConfirm(text, confirmLabel, actions, label, cx) {
+    this.asking = { text, confirmLabel, actions, label };
+    cx.notify();
+  }
+
   askDiscard(files, cx) {
     const tracked = files.filter((f) => !f.fresh).map((f) => f.path);
     const fresh = files.filter((f) => f.fresh).map((f) => f.path);
@@ -815,8 +881,47 @@ export default class JamesChanges extends View {
       : `Discard ${tracked.length} changed${
           fresh.length ? ` and delete ${fresh.length} untracked` : ""
         } files?`;
-    this.asking = { text: `${text} This cannot be undone.`, actions };
-    cx.notify();
+    this.askConfirm(
+      `${text} This cannot be undone.`,
+      tr("sc.confirm_discard"),
+      actions,
+      "Discard changes",
+      cx
+    );
+  }
+
+  stashPush(cx) {
+    this.gitAction(
+      ["stash", "push", "-u", "-m", `WIP on ${this.branch || "HEAD"}`],
+      cx,
+      "Stash"
+    );
+  }
+
+  stashApply(ref, cx) {
+    this.gitAction(["stash", "apply", ref], cx, "Apply stash");
+  }
+
+  stashPop(ref, cx) {
+    this.gitAction(["stash", "pop", ref], cx, "Pop stash");
+  }
+
+  askStashDrop(ref, cx) {
+    this.askConfirm(
+      `Drop ${ref}? This cannot be undone.`,
+      "Drop",
+      [["stash", "drop", ref]],
+      "Drop stash",
+      cx
+    );
+  }
+
+  createBranchFromCommit(fullHash, cx) {
+    const name = this.branchNameInput.value().trim();
+    if (!name || name.startsWith("-")) return;
+    this.branchFromCommit = null;
+    this.branchNameInput.set_value("");
+    this.gitAction(["switch", "-c", name, fullHash], cx, "Create branch");
   }
 
   selectCommitMode(modeId, cx) {
@@ -1468,6 +1573,19 @@ export default class JamesChanges extends View {
               .text_size(12)
               .text_color(t.foreground)
           )
+          .when(this.message.length > 0, (el) => {
+            const firstLen = this.message.split("\n")[0].length;
+            const over = firstLen > 72;
+            return el.child(
+              div()
+                .absolute()
+                .left(8)
+                .bottom(7)
+                .text_size(10)
+                .text_color(over ? t.ansi3 : t.dim)
+                .child(`${firstLen}/72`)
+            );
+          })
           .child(
             h_flex()
               .absolute()
@@ -1689,7 +1807,7 @@ export default class JamesChanges extends View {
               this.pickFile(f.path, f.staged, cx)
             )
           )
-          .when(!f.staged, (el) =>
+          .when(!f.staged && !f.conflict, (el) =>
             el.child(
               actionBtn("undo", ICON.undo, tr("sc.discard"), (cx) =>
                 this.askDiscard([f], cx)
@@ -1700,7 +1818,11 @@ export default class JamesChanges extends View {
             actionBtn(
               f.staged ? "unstage" : "stage",
               f.staged ? ICON.minus : ICON.plus,
-              f.staged ? tr("sc.unstage") : tr("sc.stage"),
+              f.conflict
+                ? "Mark resolved (stage)"
+                : f.staged
+                ? tr("sc.unstage")
+                : tr("sc.stage"),
               (cx) =>
                 f.staged
                   ? this.unstageFile(f.path, cx)
@@ -1787,6 +1909,70 @@ export default class JamesChanges extends View {
       if (!hidden) out.push(this.renderFileRow(f, parts.length - 1, false, t));
     }
     return out;
+  }
+
+  renderStashRows(t) {
+    return this.stashes.map((s) => {
+      const rowId = `stash-${s.ref}`;
+      const hovered = this.hot === rowId;
+      const pill = (id, label, danger, fn) =>
+        div()
+          .id(id)
+          .h(20)
+          .px(6)
+          .flex()
+          .items_center()
+          .rounded(4)
+          .cursor_pointer()
+          .text_size(10.5)
+          .text_color(danger ? t.ansi1 : t.muted)
+          .bg(t.raised)
+          .hover((st) =>
+            st.bg(danger ? t.ansi1 + "22" : t.hover).text_color(danger ? t.ansi1 : t.foreground)
+          )
+          .on_mouse_down("left", (_ev, cx) => {
+            cx.stop_propagation();
+            this.hot = null;
+            fn(cx);
+          })
+          .child(label);
+
+      return h_flex()
+        .id(rowId)
+        .h(26)
+        .flex_none()
+        .px(8)
+        .gap(6)
+        .items_center()
+        .rounded(6)
+        .hover((st) => st.bg(t.hover))
+        .on_hover((on, cx) => this.setHover(rowId, on, cx))
+        .child(svg(ICON.stash).size(12).flex_none().text_color(t.ansi5 ?? t.accent))
+        .child(
+          div()
+            .flex_1()
+            .min_w(0)
+            .truncate()
+            .text_size(12)
+            .text_color(t.foreground)
+            .child(s.message || s.ref)
+        )
+        .when(!hovered, (el) =>
+          el.child(
+            div()
+              .flex_none()
+              .text_size(10.5)
+              .text_color(t.dim)
+              .child(age(s.time))
+          )
+        )
+        .when(hovered, (el) =>
+          el
+            .child(pill(`spop-${s.ref}`, "Pop", false, (cx) => this.stashPop(s.ref, cx)))
+            .child(pill(`sapply-${s.ref}`, "Apply", false, (cx) => this.stashApply(s.ref, cx)))
+            .child(pill(`sdrop-${s.ref}`, "Drop", true, (cx) => this.askStashDrop(s.ref, cx)))
+        );
+    });
   }
 
   // ── Collapsible section with rounded pill header + draggable grip ─────────
@@ -2161,6 +2347,165 @@ export default class JamesChanges extends View {
                           .child(`${c.author} · ${c.time}`)
                       )
                   )
+                  .child(
+                    (() => {
+                      const act = (id, label, danger, fn) =>
+                        div()
+                          .id(id)
+                          .h(20)
+                          .px(6)
+                          .flex()
+                          .items_center()
+                          .rounded(4)
+                          .bg(t.background)
+                          .border_1()
+                          .border_color(t.border)
+                          .text_size(10.5)
+                          .text_color(danger ? t.ansi1 : t.muted)
+                          .cursor_pointer()
+                          .hover((s) =>
+                            s
+                              .bg(danger ? t.ansi1 + "22" : t.hover)
+                              .text_color(danger ? t.ansi1 : t.foreground)
+                          )
+                          .on_mouse_down("left", (_ev, cx) => {
+                            cx.stop_propagation();
+                            fn(cx);
+                          })
+                          .child(label);
+                      const copied = this.copiedHash === c.fullHash;
+                      return h_flex()
+                        .gap(4)
+                        .flex_wrap()
+                        .child(
+                          act(
+                            `cact-copy-${c.fullHash}`,
+                            copied ? "Copied" : "Copy hash",
+                            false,
+                            (cx) => {
+                              cx.write_to_clipboard(c.fullHash);
+                              this.copiedHash = c.fullHash;
+                              cx.notify();
+                              cx.timer.after(1500, (timerCx) => {
+                                if (this.copiedHash === c.fullHash) {
+                                  this.copiedHash = null;
+                                  timerCx.notify();
+                                }
+                              });
+                            }
+                          )
+                        )
+                        .child(
+                          act(`cact-branch-${c.fullHash}`, "Branch", false, (cx) => {
+                            this.branchFromCommit =
+                              this.branchFromCommit === c.fullHash ? null : c.fullHash;
+                            this.branchNameInput.set_value("");
+                            if (this.branchFromCommit) this.branchNameInput.focus();
+                            cx.notify();
+                          })
+                        )
+                        .child(
+                          act(`cact-co-${c.fullHash}`, "Checkout", false, (cx) =>
+                            this.askConfirm(
+                              `Checkout commit ${c.hash} (detached HEAD)?`,
+                              "Checkout",
+                              [["checkout", c.fullHash]],
+                              "Checkout",
+                              cx
+                            )
+                          )
+                        )
+                        .child(
+                          act(`cact-cp-${c.fullHash}`, "Cherry-pick", false, (cx) =>
+                            this.askConfirm(
+                              `Cherry-pick ${c.hash} onto ${this.branch || "HEAD"}?`,
+                              "Cherry-pick",
+                              [["cherry-pick", c.fullHash]],
+                              "Cherry-pick",
+                              cx
+                            )
+                          )
+                        )
+                        .child(
+                          act(`cact-rev-${c.fullHash}`, "Revert", false, (cx) =>
+                            this.askConfirm(
+                              `Create a new commit reverting ${c.hash}?`,
+                              "Revert",
+                              [["revert", "--no-edit", c.fullHash]],
+                              "Revert",
+                              cx
+                            )
+                          )
+                        )
+                        .child(
+                          act(`cact-rsoft-${c.fullHash}`, "Reset soft", true, (cx) =>
+                            this.askConfirm(
+                              `Soft reset ${this.branch || "HEAD"} to ${c.hash} (keeps changes staged)?`,
+                              "Reset",
+                              [["reset", "--soft", c.fullHash]],
+                              "Reset soft",
+                              cx
+                            )
+                          )
+                        )
+                        .child(
+                          act(`cact-rmix-${c.fullHash}`, "Reset mixed", true, (cx) =>
+                            this.askConfirm(
+                              `Mixed reset ${this.branch || "HEAD"} to ${c.hash} (keeps changes unstaged)?`,
+                              "Reset",
+                              [["reset", "--mixed", c.fullHash]],
+                              "Reset mixed",
+                              cx
+                            )
+                          )
+                        );
+                    })()
+                  )
+                  .when(this.branchFromCommit === c.fullHash, (el) =>
+                    el.child(
+                      h_flex()
+                        .gap(4)
+                        .items_center()
+                        .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+                        .child(
+                          div()
+                            .flex_1()
+                            .h(24)
+                            .px(6)
+                            .flex()
+                            .items_center()
+                            .rounded(5)
+                            .border_1()
+                            .border_color(t.accent)
+                            .bg(t.background)
+                            .child(
+                              Input.new(this.branchNameInput)
+                                .w_full()
+                                .text_size(11.5)
+                                .text_color(t.foreground)
+                            )
+                        )
+                        .child(
+                          div()
+                            .id(`cbranch-go-${c.fullHash}`)
+                            .h(24)
+                            .px(8)
+                            .flex()
+                            .items_center()
+                            .rounded(5)
+                            .bg(t.solid)
+                            .text_size(11)
+                            .text_color(t.solid_foreground)
+                            .cursor_pointer()
+                            .hover((s) => s.opacity(0.9))
+                            .on_mouse_down("left", (_ev, cx) => {
+                              cx.stop_propagation();
+                              this.createBranchFromCommit(c.fullHash, cx);
+                            })
+                            .child("Create")
+                        )
+                    )
+                  )
                   .when(Boolean(c.body), (el) =>
                     el
                       .when(showFullBody, (bEl) =>
@@ -2412,7 +2757,7 @@ export default class JamesChanges extends View {
       .child(this.allBranches ? "All" : "Branch");
 
     this.used = 12;
-    const clean = !this.staged.length && !this.unstaged.length;
+    const clean = !this.staged.length && !this.unstaged.length && !this.conflicts.length;
     const graphOpen = !this.collapsed.has("log");
     const workOpen = !this.collapsed.has("work");
     const stagedOpen = this.staged.length > 0 && !this.collapsed.has("staged");
@@ -2444,6 +2789,18 @@ export default class JamesChanges extends View {
                 ),
           ]
         : [
+            ...(this.conflicts.length
+              ? this.renderSection(
+                  "conflicts",
+                  "Merge Conflicts",
+                  this.conflicts.length,
+                  null,
+                  [],
+                  () => this.renderFileRows(this.conflicts, "conflicts", t, ""),
+                  t,
+                  { cap: 140 }
+                )
+              : []),
             ...(this.staged.length
               ? this.renderSection(
                   "staged",
@@ -2469,24 +2826,37 @@ export default class JamesChanges extends View {
               tr("sc.changes"),
               this.unstaged.length,
               sum(this.unstaged),
-              this.unstaged.length
-                ? [
-                    this.iconBtn(
-                      "sc-discard-all",
-                      ICON.undo,
-                      tr("sc.discard_all"),
-                      (cx) => this.askDiscard(this.unstaged, cx),
-                      t
-                    ),
-                    this.iconBtn(
-                      "sc-stage-all",
-                      ICON.plus,
-                      tr("sc.stage_all"),
-                      (cx) => this.stageAll(cx),
-                      t
-                    ),
-                  ]
-                : [],
+              [
+                ...(this.staged.length + this.unstaged.length > 0
+                  ? [
+                      this.iconBtn(
+                        "sc-stash-push",
+                        ICON.stash,
+                        "Stash all changes",
+                        (cx) => this.stashPush(cx),
+                        t
+                      ),
+                    ]
+                  : []),
+                ...(this.unstaged.length
+                  ? [
+                      this.iconBtn(
+                        "sc-discard-all",
+                        ICON.undo,
+                        tr("sc.discard_all"),
+                        (cx) => this.askDiscard(this.unstaged, cx),
+                        t
+                      ),
+                      this.iconBtn(
+                        "sc-stage-all",
+                        ICON.plus,
+                        tr("sc.stage_all"),
+                        (cx) => this.stageAll(cx),
+                        t
+                      ),
+                    ]
+                  : []),
+              ],
               () =>
                 this.renderFileRows(
                   this.unstaged,
@@ -2497,6 +2867,18 @@ export default class JamesChanges extends View {
               t,
               workFills ? { fill: true } : { cap: this.caps.work }
             ),
+            ...(this.stashes.length
+              ? this.renderSection(
+                  "stashes",
+                  "Stashes",
+                  this.stashes.length,
+                  null,
+                  [],
+                  () => this.renderStashRows(t),
+                  t,
+                  { cap: 120 }
+                )
+              : []),
             ...(needsBottomSpacer ? [div().flex_1()] : []),
             ...this.renderSection(
               "log",
@@ -2537,10 +2919,20 @@ export default class JamesChanges extends View {
       .text_size(13)
       .track_focus(this.handle)
       .on_key_down((e, cx) => {
+        if (
+          e.key === "enter" &&
+          (e.modifiers?.control || e.modifiers?.platform) &&
+          canCommit
+        ) {
+          cx.stop_propagation();
+          this.runCommit(cx);
+          return;
+        }
         if (e.key !== "escape") return;
-        if (this.showCommitMenu || this.asking) {
+        if (this.showCommitMenu || this.asking || this.branchFromCommit) {
           this.showCommitMenu = false;
           this.asking = null;
+          this.branchFromCommit = null;
           cx.stop_propagation();
           cx.notify();
           return;
@@ -2667,9 +3059,13 @@ export default class JamesChanges extends View {
                 .hover((s) => s.opacity(0.88))
                 .on_mouse_down("left", (_ev, cx) => {
                   cx.stop_propagation();
-                  this.gitActions(this.asking.actions, cx, "Discard changes");
+                  this.gitActions(
+                    this.asking.actions,
+                    cx,
+                    this.asking.label ?? "Discard changes"
+                  );
                 })
-                .child(tr("sc.confirm_discard"))
+                .child(this.asking?.confirmLabel ?? tr("sc.confirm_discard"))
             )
         )
       )

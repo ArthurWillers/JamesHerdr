@@ -144,6 +144,8 @@ export const diffTabMethods = {
     this.mode = "diff";
     this.diffSpace = p.space;
     this.diffLayout = localStorage.getItem("diff-layout") === "split" ? "split" : "inline";
+    this.diffFull = localStorage.getItem("diff-full") === "1";
+    this.stagingInDiff = false;
     this.target = null;
     this.targetId = null;
     this.rows = [];
@@ -210,9 +212,10 @@ export const diffTabMethods = {
       let lines = null;
       let note = null;
       try {
+        const ctxArg = this.diffFull ? ["-U99999"] : [];
         if (target.commit) {
           const r = await git([
-            "show", "--no-ext-diff", "--no-color", "--diff-merges=first-parent",
+            "show", ...ctxArg, "--no-ext-diff", "--no-color", "--diff-merges=first-parent",
             "--format=", target.commit, "--", target.path,
           ]);
           if (r.code !== 0) throw new Error(r.stderr || "git show failed");
@@ -233,7 +236,7 @@ export const diffTabMethods = {
             }
           } else {
             const r = await git([
-              "diff", ...(target.staged ? ["--cached"] : []),
+              "diff", ...ctxArg, ...(target.staged ? ["--cached"] : []),
               "--no-ext-diff", "--no-color", "--", target.path,
             ]);
             if (r.code !== 0) throw new Error(r.stderr || "git diff failed");
@@ -287,6 +290,82 @@ export const diffTabMethods = {
     localStorage.setItem("diff-layout", layout);
     this.splitOffset = 0;
     cx.notify();
+  },
+
+  toggleDiffFull(cx) {
+    this.diffFull = !this.diffFull;
+    localStorage.setItem("diff-full", this.diffFull ? "1" : "0");
+    this.lastRaw = null;
+    this.loadDiff(cx);
+    cx.notify();
+  },
+
+  stepPeer(delta, cx) {
+    const target = this.target;
+    const peers = target?.peers ?? [];
+    if (peers.length < 2) return;
+    const idx = peers.findIndex((p) => p.path === target.path);
+    const nextIdx = idx < 0 ? 0 : (idx + delta + peers.length) % peers.length;
+    const next = peers[nextIdx];
+    const updated = {
+      ...target,
+      path: next.path,
+      staged: target.commit ? false : Boolean(next.staged),
+      fresh: Boolean(next.fresh),
+      status: next.status ?? null,
+      at: Date.now(),
+    };
+    const entries = shared(TABS_KEY) ?? {};
+    setShared(TABS_KEY, {
+      ...entries,
+      [this.diffSpace]: { target: updated, pending: null },
+    });
+    const tab = diffTabOf(this.diffSpace);
+    if (tab) run("tab.rename", { id: tab, name: baseName(next.path) });
+    this.syncTarget(cx);
+  },
+
+  toggleStageFromDiff(cx) {
+    const target = this.target;
+    if (!target || target.commit || this.stagingInDiff) return;
+    this.stagingInDiff = true;
+    cx.notify();
+    cx.spawn(async (cx) => {
+      try {
+        const { root, on } = target;
+        const opts = { cwd: root, on: on ?? undefined };
+        if (target.staged) {
+          const head = await exec("git", [...READ, "rev-parse", "--verify", "HEAD"], opts);
+          const args =
+            head.code === 0
+              ? ["reset", "HEAD", "--", target.path]
+              : ["rm", "--cached", "--", target.path];
+          const r = await exec("git", args, opts);
+          if (r.code !== 0) throw new Error((r.stderr || r.stdout || "Unstage failed").trim());
+        } else {
+          const r = await exec("git", ["add", "--", target.path], opts);
+          if (r.code !== 0) throw new Error((r.stderr || r.stdout || "Stage failed").trim());
+        }
+        const nextStaged = !target.staged;
+        const updated = {
+          ...target,
+          staged: nextStaged,
+          fresh: nextStaged ? false : target.fresh,
+          at: Date.now(),
+        };
+        const entries = shared(TABS_KEY) ?? {};
+        setShared(TABS_KEY, {
+          ...entries,
+          [this.diffSpace]: { target: updated, pending: null },
+        });
+        this.syncTarget(cx);
+      } catch (e) {
+        this.diffNote = String(e?.message ?? e).trim();
+      } finally {
+        this.stagingInDiff = false;
+        cx.notify();
+      }
+    });
   },
 
   // ── Syntax colours, worked out once per diff ──────────────────────────────
@@ -524,6 +603,97 @@ export const diffTabMethods = {
       )
       .when(this.del > 0, (el) =>
         el.child(div().text_size(11.5).text_color(t.ansi1).child(`−${this.del}`))
+      )
+      .when((target?.peers?.length ?? 0) > 1, (el) => {
+        const peers = target.peers;
+        const idx = Math.max(0, peers.findIndex((p) => p.path === target.path));
+        const navBtn = (id, label, delta) =>
+          div()
+            .id(id)
+            .w(22)
+            .h(22)
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded(5)
+            .cursor_pointer()
+            .text_size(12)
+            .text_color(t.muted)
+            .hover((s) => s.bg(t.hover).text_color(t.foreground))
+            .on_mouse_down("left", (_ev, cx) => {
+              cx.stop_propagation();
+              this.stepPeer(delta, cx);
+            })
+            .child(label);
+        return el.child(
+          h_flex()
+            .flex_none()
+            .gap(2)
+            .px(2)
+            .items_center()
+            .rounded(7)
+            .border_1()
+            .border_color(t.border)
+            .child(navBtn("sc-diff-prev", "←", -1))
+            .child(
+              div()
+                .px(3)
+                .text_size(10.5)
+                .text_color(t.dim)
+                .child(`${idx + 1}/${peers.length}`)
+            )
+            .child(navBtn("sc-diff-next", "→", 1))
+        );
+      })
+      .child(
+        div()
+          .id("sc-diff-full-toggle")
+          .h(26)
+          .px(8)
+          .flex()
+          .items_center()
+          .rounded(6)
+          .border_1()
+          .border_color(this.diffFull ? t.accent : t.border)
+          .bg(this.diffFull ? t.selected : t.raised)
+          .cursor_pointer()
+          .text_size(11.5)
+          .text_color(this.diffFull ? t.foreground : t.muted)
+          .hover((s) => s.bg(t.hover).text_color(t.foreground))
+          .on_mouse_down("left", (_ev, cx) => {
+            cx.stop_propagation();
+            this.toggleDiffFull(cx);
+          })
+          .child("Full file")
+      )
+      .when(Boolean(target && !target.commit), (el) =>
+        el.child(
+          div()
+            .id("sc-diff-stage-toggle")
+            .h(26)
+            .px(8)
+            .flex()
+            .items_center()
+            .rounded(6)
+            .border_1()
+            .border_color(t.border)
+            .bg(t.raised)
+            .cursor_pointer()
+            .text_size(11.5)
+            .text_color(t.foreground)
+            .hover((s) => s.bg(t.hover))
+            .on_mouse_down("left", (_ev, cx) => {
+              cx.stop_propagation();
+              this.toggleStageFromDiff(cx);
+            })
+            .child(
+              this.stagingInDiff
+                ? "…"
+                : target.staged
+                ? "Unstage"
+                : "Stage"
+            )
+        )
       )
       .child(this.layoutToggle(t))
       .when(canOpen, (el) =>
