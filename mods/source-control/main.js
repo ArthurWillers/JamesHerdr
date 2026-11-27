@@ -36,9 +36,15 @@ import {
   setShared,
   openOverlay,
   checking,
-  notify,
+  notify as appNotify,
   props,
 } from "herdr";
+
+function notify(opts) {
+  appNotify(opts);
+  const q = shared("better-alerts.queue");
+  setShared("better-alerts.queue", [...(Array.isArray(q) ? q : []), opts]);
+}
 
 const DEFAULT_PROMPT =
   "Analyze the git diff below and write a git commit message following the Conventional Commits specification:\n" +

@@ -1,7 +1,13 @@
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex, ScrollHandle } from "gpui-base";
-import { spaces, panes, run, openOverlay, theme, window, shared, setShared, layout, settings, nextCommand, knownAgents, exec, notify, home, readTextFile, checking } from "herdr";
+import { spaces, panes, run, openOverlay, theme, window, shared, setShared, layout, settings, nextCommand, knownAgents, exec, notify as appNotify, home, readTextFile, checking } from "herdr";
 import { tr } from "./i18n.js";
+
+function notify(opts) {
+  appNotify(opts);
+  const q = shared("better-alerts.queue");
+  setShared("better-alerts.queue", [...(Array.isArray(q) ? q : []), opts]);
+}
 
 function find(node, id) {
   if (node?.id === id) return node;
@@ -15,17 +21,62 @@ function find(node, id) {
 // Same as the agents mod: drops a status glyph, keeps a leading bracket or quote.
 const clean = (s) => (s ?? "").replace(/^[^\p{L}\p{N}\p{Ps}\p{Pi}]+/u, "").replace(/^\[ [!.] \] /, "").trim();
 
-// A tab Herdr named (unnamed, or after its program) follows its agent's live
-// title, as the agents list does; a name the person gave stays.
-function label(tab, lead) {
+const shortFolder = (cwd, spaceFolder) => {
+  if (!cwd) return "";
+  const h = home();
+  if (cwd === h) return "~";
+  if (spaceFolder && cwd !== spaceFolder && cwd.startsWith(spaceFolder + "/")) {
+    const rel = cwd.slice(spaceFolder.length + 1);
+    const parts = rel.split("/").filter(Boolean);
+    return parts.length > 2 ? parts.slice(-2).join("/") : rel;
+  }
+  const cleanPath = cwd.replace(/\/+$/, "");
+  return cleanPath.split("/").pop() || "~";
+};
+
+// A tab Herdr named (unnamed, or after its program) follows its agent's or shell's live
+// state (topic, running tool, folder, split count); a name the person gave stays.
+function label(tab, lead, tabPanes, space) {
   const prog = lead?.program?.name;
   const base = tab.named ? tab.name : prog ?? "Terminal";
-  if (!lead?.program?.agent) return base;
+  const autoNamed = !tab.named || tab.name === prog || tab.name === "Terminal";
+  if (!autoNamed || !lead?.terminal) return base;
+
   const live = clean(lead.title);
-  // clean() would strip a path's leading ~ or /: test the title with only its status glyph gone.
-  const path = /^[~/]|^[A-Za-z]:\\/.test((lead.title ?? "").replace(/^[^\p{L}\p{N}~/]+/u, ""));
-  const telling = live && live !== lead.terminal && live !== prog && !path && !live.includes("@") && live.toLowerCase() !== lead.program.key;
-  return (tab.name === prog || !tab.named) && telling ? live : base;
+  const isPath = /^[~/]|^[A-Za-z]:\\/.test((lead.title ?? "").replace(/^[^\p{L}\p{N}~/]+/u, ""));
+  const telling =
+    Boolean(live) &&
+    live !== lead.terminal &&
+    live !== prog &&
+    !isPath &&
+    !live.includes("@") &&
+    live.toLowerCase() !== (lead.program?.key ?? "");
+
+  let title = base;
+  if (lead.program?.agent) {
+    if (telling) {
+      title = live;
+    } else {
+      const dir = shortFolder(lead.cwd, space?.folder);
+      title = dir && lead.cwd !== space?.folder ? `${prog} · ${dir}` : base;
+    }
+  } else {
+    const dir = shortFolder(lead.cwd, space?.folder);
+    if (telling && !lead.program?.shell) {
+      title = live;
+    } else if (prog && dir) {
+      title = `${prog} · ${dir}`;
+    } else if (telling) {
+      title = live;
+    } else if (dir) {
+      title = dir;
+    }
+  }
+
+  if (tabPanes.length > 1) {
+    title = `${title} +${tabPanes.length - 1}`;
+  }
+  return title;
 }
 
 export default class Tabs extends View {
@@ -310,9 +361,10 @@ export default class Tabs extends View {
     const button = (id, label, action) => div().id(id).size(26).flex_none().flex().items_center().justify_center().rounded(6).text_color(t.dim).hover(s => s.bg(t.hover).text_color(t.foreground))
       .on_mouse_down("left", stop).on_click(action).child(label);
     const item = (c, i) => {
-      const lead = panes().find(p => p.tab === c.id && p.program?.agent) ?? panes().find(p => p.tab === c.id);
+      const tabPanes = panes().filter(p => p.tab === c.id);
+      const lead = tabPanes.find(p => p.program?.agent) ?? tabPanes[0];
       const program = lead?.program;
-      const name = label(c, lead);
+      const name = label(c, lead, tabPanes, space);
       const isSource = this.dragging && this.pressed === i;
       const isDraggingOther = this.dragging && this.pressed !== null && this.pressed !== i;
       const dropMode = isDraggingOther && this.dragTarget?.index === i ? this.dragTarget.mode : null;

@@ -12,7 +12,7 @@ import {
   knownAgents,
   run,
   exec,
-  notify,
+  notify as appNotify,
   openOverlay,
   theme,
   shared,
@@ -20,6 +20,12 @@ import {
   checking,
 } from "herdr";
 import { tr } from "./i18n.js";
+
+function notify(opts) {
+  appNotify(opts);
+  const q = shared("better-alerts.queue");
+  setShared("better-alerts.queue", [...(Array.isArray(q) ? q : []), opts]);
+}
 
 const ICON = {
   clock: "mods/activity-bar/icons/routines.svg",

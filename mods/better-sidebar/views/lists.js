@@ -9,7 +9,7 @@ import {
   layout,
   run,
   exec,
-  notify,
+  notify as appNotify,
   shared,
   setShared,
   setAgentOrder,
@@ -19,6 +19,12 @@ import { Spaces } from "./spaces.js";
 import { Agents } from "./agents.js";
 import { findNode } from "./find-node.js";
 import { TEXT, Badge, Rail } from "./ui.js";
+
+function notify(opts) {
+  appNotify(opts);
+  const q = shared("better-alerts.queue");
+  setShared("better-alerts.queue", [...(Array.isArray(q) ? q : []), opts]);
+}
 
 const TABS = ["spaces", "agents"];
 

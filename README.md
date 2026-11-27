@@ -13,6 +13,7 @@ Personal [Herdr](https://herdr.dev) workspace layout, mods, and [Omarchy](https:
 - **`james-github`**: Zero-config GitHub hub (`gh api graphql`) for Pull Requests, Issues, and CI & GitHub Pages failures across all accessible repos/orgs, with filters, alert muting, and 1-click Default Agent launch.
 - **`james-notes`**: Persistent Markdown scratchpad with per-Space and General scopes and auto-save.
 - **`source-control`**: VS Code-inspired Source Control panel with header Pull/Push sync counters, AI commit message generation (Global + per-Space prompt & diff ignore patterns, including Ollama support, background generation & per-repo drafts), Commit/Push/Amend actions (`Ctrl+Enter` + 72-char counter), `Merge Conflicts` & `Stashes` sections, flat/tree file views with Material icons (`better-icons`) opening in `better-files`, a multi-lane interactive commit `Graph` (All/Branch toggle + commit actions), and a dedicated centre diff tab (inline & side-by-side, `Full file`, Stage/Unstage, prev/next file nav, and syntax highlighting).
+- **`better-alerts` (customized)**: Based on `munza/herdr-mods/better-alerts`, adding a shared `better-alerts.queue` so all JamesHerdr mods (`source-control`, `james-routines`, `james-tabs`, `better-sidebar`) also dispatch native Linux/Hyprland OS notifications alongside in-app toasts.
 - **`james-settings`**: Unified settings dialog for **Default Agent**, **AI Commit**, **Sidebar** (`better-sidebar`), **Files** (`better-files`), **Alerts** (`better-alerts`), and **Omarchy**.
 - **`james-tabs` & `james-new-menu`**: Custom tab bar with drag-and-drop tab merging into split panes, startup Omarchy theme sync, and a clean `+` menu showing only genuinely installed CLIs.
 - **`james-chrome`, `james-pane`, `james-status`, `activity-bar`**: Top sidebar brand/chrome, shared icons & English UI dictionary, rounded pane header, status bar, and right activity rail.
@@ -20,9 +21,8 @@ Personal [Herdr](https://herdr.dev) workspace layout, mods, and [Omarchy](https:
 
 ## External Mod Prerequisites
 
-JamesHerdr uses two unmodified upstream mods from [munza/herdr-mods](https://github.com/munza/herdr-mods) (not vendored in this repo):
+JamesHerdr uses one optional unmodified upstream mod from [munza/herdr-mods](https://github.com/munza/herdr-mods) (not vendored in this repo):
 
-- **`better-alerts`**: Native Linux/Hyprland desktop notifications (`notify-send` + `hyprctl`) when agents need input or finish.
 - **`better-icons`** *(optional, recommended)*: VS Code Material Icon Theme icons for `better-files` and `source-control` (must be **copied**, not symlinked, into `~/.config/herdr-app/mods/better-icons`).
 
 ## Installation
@@ -33,13 +33,12 @@ JamesHerdr uses two unmodified upstream mods from [munza/herdr-mods](https://git
 git clone https://github.com/ArthurWillers/JamesHerdr.git ~/Code/JamesHerdr
 ```
 
-2. Install the required upstream mods from `munza/herdr-mods`:
+2. Install the optional upstream `better-icons` mod from `munza/herdr-mods`:
 
 ```bash
 git clone --depth 1 --filter=blob:none --sparse https://github.com/munza/herdr-mods.git /tmp/herdr-mods
-git -C /tmp/herdr-mods sparse-checkout set better-alerts/mods/better-alerts better-icons/mods/better-icons
+git -C /tmp/herdr-mods sparse-checkout set better-icons/mods/better-icons
 mkdir -p ~/.config/herdr-app/mods
-cp -r /tmp/herdr-mods/better-alerts/mods/better-alerts ~/.config/herdr-app/mods/better-alerts
 cp -r /tmp/herdr-mods/better-icons/mods/better-icons ~/.config/herdr-app/mods/better-icons
 rm -rf /tmp/herdr-mods
 ```
@@ -74,8 +73,7 @@ herdr-app do layout.switch '{"name":"JamesHerdr"}'
 Read ~/.config/herdr-app/AGENTS.md, then install and configure the JamesHerdr layout on this machine:
 
 1. Clone https://github.com/ArthurWillers/JamesHerdr.git into ~/Code/JamesHerdr (or pull latest if it already exists).
-2. Install the required upstream mods from https://github.com/munza/herdr-mods into ~/.config/herdr-app/mods/ (by copying, NOT symlinking):
-   - better-alerts/mods/better-alerts -> ~/.config/herdr-app/mods/better-alerts
+2. Install the optional upstream mod from https://github.com/munza/herdr-mods into ~/.config/herdr-app/mods/ (by copying, NOT symlinking):
    - better-icons/mods/better-icons -> ~/.config/herdr-app/mods/better-icons
 3. Create ~/.config/herdr-app/{layouts,mods,themes,scripts} and symlink from ~/Code/JamesHerdr:
    - layouts/JamesHerdr.json -> ~/.config/herdr-app/layouts/JamesHerdr.json

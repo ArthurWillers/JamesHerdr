@@ -15,8 +15,8 @@ Personal Herdr desktop layout, mods, themes, and i18n repository (`/home/avw/Cod
 
 3. **English-Only UI & Unified Mods**:
    - UI is **English-only** (`mods/james-chrome/i18n.js` holds the single English dictionary `EN` and publishes it to `shared("james.i18n.dict")`).
-   - Layout uses `better-sidebar` (vendored & customized with Cockpit dock, collapsible spaces, routines ticker, and `~/` home space creation), `better-files` (vendored & customized with whole-file `Copy` button and selectable `Editor` mode / `Select` toggle), `source-control`, and unified `james-settings` (which also edits `better-sidebar/mod.json`, `better-files/mod.json`, and `better-alerts/mod.json`).
-   - External unmodified prerequisites (installed in `~/.config/herdr-app/mods/`, not tracked in this repo): `better-alerts` and `better-icons` from `https://github.com/munza/herdr-mods`.
+   - Layout uses `better-sidebar` (vendored & customized with Cockpit dock, collapsible spaces, routines ticker, and `~/` home space creation), `better-files` (vendored & customized with whole-file `Copy` button and selectable `Editor` mode / `Select` toggle / inline `Edit`), `better-alerts` (vendored & customized with a shared native-notification queue `better-alerts.queue`), `source-control`, and unified `james-settings` (which also edits `better-sidebar/mod.json`, `better-files/mod.json`, and `better-alerts/mod.json`).
+   - External unmodified prerequisite (installed in `~/.config/herdr-app/mods/`, not tracked in this repo): `better-icons` from `https://github.com/munza/herdr-mods`.
    - Keep `DEFAULT_PROMPT` for AI Commit in English.
 
 ## GPUI / Herdr Technical Rules
