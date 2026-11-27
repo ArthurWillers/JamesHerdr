@@ -2561,9 +2561,49 @@ export default class JamesChanges extends View {
                     .child("No file changes")
                 )
               )
-              .when(Boolean(files && files.length), (el) =>
-                el.children(
-                  files.map((f) => {
+              .when(Boolean(files && files.length), (el) => {
+                const commitAdd = files.reduce((n, f) => n + (f.add || 0), 0);
+                const commitDel = files.reduce((n, f) => n + (f.del || 0), 0);
+                return el
+                  .child(
+                    h_flex()
+                      .h(22)
+                      .flex_none()
+                      .px(6)
+                      .gap(6)
+                      .items_center()
+                      .child(
+                        div()
+                          .flex_1()
+                          .text_size(10.5)
+                          .text_color(t.dim)
+                          .child(
+                            files.length === 1
+                              ? "1 file changed"
+                              : tr("sc.files_changed", { count: files.length })
+                          )
+                      )
+                      .when(commitAdd > 0, (s) =>
+                        s.child(
+                          div()
+                            .text_size(10.5)
+                            .font_weight(500)
+                            .text_color(t.ansi2)
+                            .child(`+${commitAdd}`)
+                        )
+                      )
+                      .when(commitDel > 0, (s) =>
+                        s.child(
+                          div()
+                            .text_size(10.5)
+                            .font_weight(500)
+                            .text_color(t.ansi1)
+                            .child(`−${commitDel}`)
+                        )
+                      )
+                  )
+                  .children(
+                    files.map((f) => {
                     const cfId = `cf-${c.fullHash}-${f.path}`;
                     const picked =
                       (this.open?.commit === c.fullHash ||
@@ -2649,8 +2689,8 @@ export default class JamesChanges extends View {
                           .child(f.status)
                       );
                   })
-                )
-              )
+                );
+              })
           )
       );
     }
