@@ -39,28 +39,15 @@ function folder(cwd) {
 export default class Pane extends View {
   init() {
     this.hovered = false;
-    this.dragCandidate = null;
-    this.dragging = false;
   }
 
   me() {
     return panes().find((p) => p.pane === props()?.pane);
   }
 
-  detachToTab(terminal, cx) {
+  detachToTab(terminal) {
     if (!terminal) return;
-    run("terminal.park", { terminal });
-    let attempts = 0;
-    const attach = (timerCx) => {
-      attempts++;
-      const stillOpen = panes().some((x) => x.terminal === terminal);
-      if (stillOpen && attempts < 30) {
-        timerCx.timer.after(40, attach);
-        return;
-      }
-      run("terminal.keep", { terminal, place: "tab" });
-    };
-    cx.timer.after(40, attach);
+    setShared("james.detachRequest", { terminal, at: Date.now() });
   }
 
   button(t, id, iconPath, tip, fn) {
@@ -97,64 +84,21 @@ export default class Pane extends View {
       .gap(8)
       .items_center()
       .bg(t.background)
-      .when(this.dragging, (el) => el.cursor_grabbing().border_color(t.accent))
       .when(bottom, (el) => el.border_t(1).rounded_b(9))
       .when(!bottom, (el) => el.border_b(1).rounded_t(9))
-      .when(!this.dragging, (el) => el.border_color(t.border))
+      .border_color(t.border)
       .text_size(12)
       .on_hover((hovered, cx) => { this.hovered = hovered; cx.notify(); })
-      .on_mouse_down("left", (e, cx) => {
-        run("pane.focus", { pane });
-        if (!canDetach) return;
-        this.dragCandidate = {
-          pane,
-          terminal: p.terminal,
-          tab: p.tab,
-          name,
-          startX: e.position?.x ?? 0,
-          startY: e.position?.y ?? 0,
-        };
-        this.dragging = false;
-      })
-      .on_window_mouse_move((e, cx) => {
-        if (!this.dragCandidate) return;
-        const dx = Math.abs((e.position?.x ?? 0) - this.dragCandidate.startX);
-        const dy = Math.abs((e.position?.y ?? 0) - this.dragCandidate.startY);
-        if (!this.dragging && (dx > 6 || dy > 6)) {
-          this.dragging = true;
-          setShared("james.dragPane", {
-            pane: this.dragCandidate.pane,
-            terminal: this.dragCandidate.terminal,
-            tab: this.dragCandidate.tab,
-            name: this.dragCandidate.name,
-            at: Date.now(),
-          });
-          cx.notify();
-        }
-      })
-      .on_window_mouse_up("left", (_e, cx) => {
-        if (!this.dragCandidate && !this.dragging) return;
-        const wasDragging = this.dragging;
-        this.dragCandidate = null;
-        this.dragging = false;
-        if (wasDragging) {
-          cx.timer.after(60, () => {
-            if (shared("james.dragPane")?.pane === pane) {
-              setShared("james.dragPane", null);
-            }
-          });
-        }
-        cx.notify();
-      })
+      .on_click(() => run("pane.focus", { pane }))
       .when(Boolean(pic), (el) => el.child(pic))
       .child(div().flex_none().truncate().max_w(260).font_medium().text_color(t.foreground).child(name))
       .child(div().flex_1().truncate().text_color(t.dim).child(folder(p.cwd)))
       .when(st === "working", el => el.child(svg("mods/workspace-chrome/spinner.svg").size(12).flex_none().text_color(t.working).spin(900)))
       .when(st === "blocked", el => el.child(div().flex_none().px(6).h(18).flex().items_center().rounded(5).bg(t.blocked + "26").text_size(10.5).font_semibold().text_color(t.blocked).child(tr("pane.needs_you"))))
       .when(st === "done", el => el.child(div().size(7).flex_none().rounded(4).bg(t.done)))
-      .when(this.hovered && !this.dragging, el => el
+      .when(this.hovered, el => el
         .when(canDetach, (d) =>
-          d.child(this.button(t, `ph-detach-${pane}`, "mods/james-pane/detach.svg", tr("pane.detach_tab"), (cx) => this.detachToTab(p.terminal, cx)))
+          d.child(this.button(t, `ph-detach-${pane}`, "mods/james-pane/detach.svg", tr("pane.detach_tab"), () => this.detachToTab(p.terminal)))
         )
         .child(this.button(t, `ph-r-${pane}`, "mods/pane/split-right.svg", "Split right", () => run("pane.split", { direction: "right", pane })))
         .child(this.button(t, `ph-d-${pane}`, "mods/pane/split-down.svg", "Split down", () => run("pane.split", { direction: "down", pane })))

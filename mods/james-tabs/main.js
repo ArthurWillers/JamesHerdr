@@ -36,7 +36,6 @@ export default class Tabs extends View {
     this.dragPos = null;
     this.dragName = "";
     this.dragTarget = null;
-    this.paneDropHover = false;
     this.scroll = ScrollHandle.new();
     const langPath = `${home()}/.config/omarchy/language`;
     const syncSystemLang = async () => {
@@ -73,6 +72,13 @@ export default class Tabs extends View {
       return false;
     };
     if (!checking()) {
+      cx.timer.every(100, (timerCx) => {
+        const req = shared("james.detachRequest");
+        if (req?.terminal) {
+          setShared("james.detachRequest", null);
+          this.detachPaneToTab(req.terminal, timerCx);
+        }
+      });
       cx.spawn(async () => {
         const hasOmarchyLang = await syncSystemLang();
         if (!hasOmarchyLang) return;
@@ -255,7 +261,7 @@ export default class Tabs extends View {
         timerCx.timer.after(40, attach);
         return;
       }
-      run("terminal.keep", { terminal, place: "tab" });
+      run("terminal.keep", { terminal });
     };
     cx.timer.after(40, attach);
   }
@@ -417,36 +423,8 @@ export default class Tabs extends View {
           else { run("layout.select", { stack: "panel-body", child: id }); run("layout.show", { id: "panel" }); }
         }).child(svg(icon).size(14)).child(label);
     };
-    const dragPane = shared("james.dragPane");
-    const paneDropping = Boolean(dragPane?.terminal && this.paneDropHover);
-
-    return h_flex().size_full().min_w(0).relative().px(10).pl(lightsPadding).gap(3).items_center().bg(t.chrome).border_b(1).border_color(paneDropping ? t.accent : t.border)
-      .when(this.dragging || Boolean(dragPane?.terminal), el => el.cursor_grabbing())
-      .on_hover((hovered, cx) => {
-        if (!shared("james.dragPane")?.terminal) {
-          if (this.paneDropHover) {
-            this.paneDropHover = false;
-            cx.notify();
-          }
-          return;
-        }
-        if (this.paneDropHover !== hovered) {
-          this.paneDropHover = hovered;
-          cx.notify();
-        }
-      })
-      .on_window_mouse_up("left", (_e, cx) => {
-        const dp = shared("james.dragPane");
-        if (dp?.terminal && this.paneDropHover) {
-          setShared("james.dragPane", null);
-          this.paneDropHover = false;
-          this.detachPaneToTab(dp.terminal, cx);
-          cx.notify();
-        } else if (this.paneDropHover) {
-          this.paneDropHover = false;
-          cx.notify();
-        }
-      })
+    return h_flex().size_full().min_w(0).relative().px(10).pl(lightsPadding).gap(3).items_center().bg(t.chrome).border_b(1).border_color(t.border)
+      .when(this.dragging, el => el.cursor_grabbing())
       .on_mouse_move((e, cx) => {
         if (this.pressed === null) return;
         if (!this.dragging && this.dragStart && e.position) {
@@ -475,25 +453,6 @@ export default class Tabs extends View {
       .when(w?.buttons, el => el.child(button("minimize", w.platform === "windows" ? svg("mods/tabs/win-min.svg").size(16) : "−", () => run("window.minimize")))
         .child(button("maximize", w.platform === "windows" ? svg(`mods/tabs/${w.maximized ? "win-restore" : "win-max"}.svg`).size(16) : "□", () => run("window.maximize")))
         .child(button("close-window", w.platform === "windows" ? svg("mods/tabs/win-close.svg").size(16) : svg("mods/pane/close.svg").size(13), () => run("window.close"))))
-      .when(paneDropping, el =>
-        el.child(
-          h_flex()
-            .h(26)
-            .px(10)
-            .gap(6)
-            .rounded(6)
-            .flex_none()
-            .items_center()
-            .border_1()
-            .border_color(t.accent)
-            .bg(t.selected)
-            .text_size(11.5)
-            .font_weight(600)
-            .text_color(t.foreground)
-            .child(div().max_w(140).truncate().child(dragPane.name || "Terminal"))
-            .child(div().text_size(10).text_color(t.accent).child(tr("tabs.drop_detach")))
-        )
-      )
       .when(this.dragging && Boolean(this.dragPos), el => {
         const zoom = settings().zoom || 1;
         const hasTag = Boolean(this.dragTarget?.mode);
